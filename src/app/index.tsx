@@ -127,7 +127,7 @@ ANY AGE, JUST YOU, YOUR TIME AND THE WANT TO TRY.
   }}
 />
               <Image
-  source={require('../../assets/images/circlelogo.png.png')}
+  source={require('../../assets/images/test.png.png')}
   style={styles.startLogo}
   resizeMode="contain"
 />
