@@ -1,4 +1,5 @@
 {
+  "id": "/",
   "name": "Zero to Thirty",
   "short_name": "Zero30",
   "description": "A beginner running programme from Fitter After 50 UK. Build from zero to 30 minute runs.",
@@ -11,7 +12,14 @@
     {
       "src": "/icon.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }
