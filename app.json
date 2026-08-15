@@ -20,9 +20,13 @@
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "output": "static",
-      "favicon": "./assets/images/favicon.png"
-    },
+  "output": "static",
+  "favicon": "./assets/images/favicon.png",
+  "name": "Zero to Thirty",
+  "shortName": "Zero30",
+  "themeColor": "#FF8C00",
+  "backgroundColor": "#111111"
+},
     "plugins": [
       "expo-router",
       [
