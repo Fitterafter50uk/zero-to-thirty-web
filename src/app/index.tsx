@@ -378,7 +378,7 @@ const styles = StyleSheet.create({
   headerImage: {
     width: 650,
     height: 180,
-    transform: [{ scale: 2.0 }],
+    transform: [{ scale: 1.0 }],
   },
 
   hero: {
