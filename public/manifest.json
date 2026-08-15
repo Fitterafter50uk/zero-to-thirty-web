@@ -9,17 +9,17 @@
   "theme_color": "#FF8C00",
   "orientation": "portrait",
   "icons": [
-    {
-      "src": "/icon.png",
-      "sizes": "1024x1024",
-      "type": "image/png",
-      "purpose": "any"
-    },
-    {
-      "src": "/icon.png",
-      "sizes": "1024x1024",
-      "type": "image/png",
-      "purpose": "maskable"
-    }
-  ]
+  {
+    "src": "/homescreenbutton.png",
+    "sizes": "1024x1024",
+    "type": "image/png",
+    "purpose": "any"
+  },
+  {
+    "src": "/homescreenbutton.png",
+    "sizes": "1024x1024",
+    "type": "image/png",
+    "purpose": "maskable"
+  }
+]
 }
