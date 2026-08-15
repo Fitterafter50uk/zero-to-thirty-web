@@ -5,18 +5,30 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "zerotothirty",
+    "scheme": "zero-to-thirty",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
 
+    "splash": {
+      "image": "./assets/images/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#111111"
+    },
+
+    "ios": {
+      "supportsTablet": true
+    },
+
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/icon.png",
+        "backgroundColor": "#111111"
+      }
+    },
+
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png",
-      "name": "Zero to Thirty",
-      "shortName": "Zero30",
-      "themeColor": "#FF8C00",
-      "backgroundColor": "#111111",
-      "manifest": "./public/manifest.json"
+      "favicon": "./assets/images/favicon.png"
     },
 
     "plugins": [
@@ -24,8 +36,7 @@
     ],
 
     "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
+      "typedRoutes": true
     }
   }
 }
