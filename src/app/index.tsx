@@ -127,13 +127,10 @@ ANY AGE, JUST YOU, YOUR TIME AND THE WANT TO TRY.
   }}
 />
               <Image
-                source={{
-                  uri: 'IMAGE:gqdz2fdt-circlelogo-om9z',
-                }}
-                style={styles.startLogo}
-                resizeMode="contain"
-              />
-
+  source={require('../../assets/images/circlelogo.png.png')}
+  style={styles.startLogo}
+  resizeMode="contain"
+/>
               <Text style={styles.startText}>
                 START YOUR PROGRAM
               </Text>
