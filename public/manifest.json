@@ -1,0 +1,17 @@
+{
+  "name": "Zero to Thirty",
+  "short_name": "Zero30",
+  "description": "A beginner running programme from Fitter After 50 UK. Build from zero to 30 minute runs.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111111",
+  "theme_color": "#FF8C00",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/assets/images/icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

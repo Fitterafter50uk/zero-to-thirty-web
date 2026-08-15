@@ -25,7 +25,8 @@
   "name": "Zero to Thirty",
   "shortName": "Zero30",
   "themeColor": "#FF8C00",
-  "backgroundColor": "#111111"
+  "backgroundColor": "#111111",
+  "manifest": "./public/manifest.json"
 },
     "plugins": [
       "expo-router",
