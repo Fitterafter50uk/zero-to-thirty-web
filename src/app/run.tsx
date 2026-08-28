@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Image,
   Pressable,
@@ -10,6 +10,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Speech from 'expo-speech';
+import { Audio } from 'expo-av';
 
 const PROGRESS_KEY = 'zero_to_thirty_progress';
 
@@ -21,21 +22,21 @@ const FINAL_GIF =
 
 const WORKOUTS = {
   1: [
-    { type: 'WALK', name: 'Warm-up', duration: 300 },
-    { type: 'RUN', duration: 60 },
-    { type: 'WALK', duration: 120 },
-    { type: 'RUN', duration: 60 },
-    { type: 'WALK', duration: 120 },
-    { type: 'RUN', duration: 60 },
-    { type: 'WALK', duration: 120 },
-    { type: 'RUN', duration: 60 },
-    { type: 'WALK', duration: 120 },
-    { type: 'RUN', duration: 60 },
-    { type: 'WALK', duration: 120 },
-    { type: 'RUN', duration: 60 },
-    { type: 'WALK', duration: 120 },
-    { type: 'RUN', duration: 120 },
-    { type: 'WALK', name: 'Cool-down', duration: 300 },
+    { type: 'WALK', name: 'Warm-up', duration: 10 },
+    { type: 'RUN', duration: 80 },
+    { type: 'WALK', duration: 10 },
+    { type: 'RUN', duration: 10 },
+    { type: 'WALK', duration: 10 },
+    { type: 'RUN', duration: 10 },
+    { type: 'WALK', duration: 10 },
+    { type: 'RUN', duration: 10 },
+    { type: 'WALK', duration: 10 },
+    { type: 'RUN', duration: 10 },
+    { type: 'WALK', duration: 10 },
+    { type: 'RUN', duration: 10 },
+    { type: 'WALK', duration: 10 },
+    { type: 'RUN', duration: 10 },
+    { type: 'WALK', name: 'Cool-down', duration: 10 },
   ],
 
   2: [
@@ -146,95 +147,411 @@ export default function RunScreen() {
   const workout = WORKOUTS[weekNumber];
 
   const [intervalIndex, setIntervalIndex] = useState(0);
+
   const [secondsLeft, setSecondsLeft] = useState(
     workout[0].duration
   );
+
   const [completed, setCompleted] = useState(false);
   const [started, setStarted] = useState(false);
   const [paused, setPaused] = useState(false);
-
   const [achievementStage, setAchievementStage] = useState(0);
 
-  /*
-   * TEMPORARY TEST MODE
-   * These buttons do NOT save progress.
-   */
-  const [testAchievement, setTestAchievement] = useState(false);
-
-  /*
-   * Week 9 / Run 3 is the actual final programme run.
-   *
-   * testAchievement is only used by the temporary
-   * TEST PROGRAMME COMPLETE button.
-   */
-  const isFinalRun =
-    (weekNumber === 9 && runNumber === 3) ||
-    testAchievement;
+  const soundRef = useRef<Audio.Sound | null>(null);
 
   const current = workout[intervalIndex];
 
+  const isFinalRun =
+    weekNumber === 9 && runNumber === 3;
+
+  async function stopCurrentAudio() {
+    try {
+      if (soundRef.current) {
+        await soundRef.current.stopAsync();
+        await soundRef.current.unloadAsync();
+        soundRef.current = null;
+      }
+    } catch (error) {
+      console.log('Could not stop audio', error);
+      soundRef.current = null;
+    }
+  }
+
+  async function playAudio(file: number) {
+    await stopCurrentAudio();
+
+    try {
+      const { sound } = await Audio.Sound.createAsync(file);
+
+      soundRef.current = sound;
+
+      await sound.playAsync();
+    } catch (error) {
+      console.log('Could not play audio', error);
+    }
+  }
+
+  async function playRunVoice() {
+    await playAudio(
+      require('../../public/audio/run.mp3')
+    );
+  }
+
+  async function playWarmupVoice() {
+    await playAudio(
+      require('../../public/audio/warmup.mp3')
+    );
+  }
+
+  async function playWalkVoice() {
+    await playAudio(
+      require('../../public/audio/walk.mp3')
+    );
+  }
+
+  async function playCooldownVoice() {
+    await playAudio(
+      require('../../public/audio/cooldown.mp3')
+    );
+  }
+
+  async function playTenSecondsVoice() {
+    await playAudio(
+      require('../../public/audio/ten_seconds.mp3')
+    );
+  }
+
+  async function playEncourage1() {
+    await playAudio(
+      require('../../public/audio/encourage_1.mp3')
+    );
+  }
+
+  async function playEncourage2() {
+    await playAudio(
+      require('../../public/audio/encourage_2.mp3')
+    );
+  }
+
+  async function playEncourage3() {
+    await playAudio(
+      require('../../public/audio/encourage_3.mp3')
+    );
+  }
+
+  async function playEncourage4() {
+    await playAudio(
+      require('../../public/audio/encourage_4.mp3')
+    );
+  }
+
+  async function playEncourage5() {
+    await playAudio(
+      require('../../public/audio/encourage_5.mp3')
+    );
+  }
+
+  async function playEncourage6() {
+    await playAudio(
+      require('../../public/audio/encourage_6.mp3')
+    );
+  }
+
+  async function playEncourage7() {
+    await playAudio(
+      require('../../public/audio/encourage_7.mp3')
+    );
+  }
+
+  async function playEncourage8() {
+    await playAudio(
+      require('../../public/audio/encourage_8.mp3')
+    );
+  }
+
+  async function playEncourage9() {
+    await playAudio(
+      require('../../public/audio/encourage_9.mp3')
+    );
+  }
+
+  async function playEncourage10() {
+    await playAudio(
+      require('../../public/audio/encourage_10.mp3')
+    );
+  }
+
+  async function playRecovery1() {
+    await playAudio(
+      require('../../public/audio/recovery_1.mp3')
+    );
+  }
+
+  async function playRecovery2() {
+    await playAudio(
+      require('../../public/audio/recovery_2.mp3')
+    );
+  }
+
+  async function playRecovery3() {
+    await playAudio(
+      require('../../public/audio/recovery_3.mp3')
+    );
+  }
+
+  async function playRecovery4() {
+    await playAudio(
+      require('../../public/audio/recovery_4.mp3')
+    );
+  }
+
+  async function playRecovery5() {
+    await playAudio(
+      require('../../public/audio/recovery_5.mp3')
+    );
+  }
+
+  async function playRecovery6() {
+    await playAudio(
+      require('../../public/audio/recovery_6.mp3')
+    );
+  }
+
+  async function playRecovery7() {
+    await playAudio(
+      require('../../public/audio/recovery_7.mp3')
+    );
+  }
+
+  async function playRecovery8() {
+    await playAudio(
+      require('../../public/audio/recovery_8.mp3')
+    );
+  }
+
+  async function playRecovery9() {
+    await playAudio(
+      require('../../public/audio/recovery_9.mp3')
+    );
+  }
+
+  async function playRecovery10() {
+    await playAudio(
+      require('../../public/audio/recovery_10.mp3')
+    );
+  }
+
+  /*
+   * INTERVAL START VOICES
+   */
+
   useEffect(() => {
+    if (!started || paused || completed) {
+      return;
+    }
+
     Speech.stop();
 
     if (current.name === 'Warm-up') {
-      Speech.speak('Warm up walk');
+      playWarmupVoice();
     } else if (current.name === 'Cool-down') {
-      Speech.speak('Cool down walk');
+      playCooldownVoice();
     } else if (current.type === 'RUN') {
-      Speech.speak('Run');
+      playRunVoice();
     } else {
-      Speech.speak('Walk');
+      playWalkVoice();
     }
-  }, [intervalIndex]);
+  }, [intervalIndex, started]);
+
+  /*
+   * 10 SECOND COUNTDOWN
+   */
 
   useEffect(() => {
-    if (secondsLeft === 10 && current.duration > 10) {
-      Speech.speak('10 seconds');
+    if (
+      !started ||
+      paused ||
+      completed ||
+      current.type !== 'RUN' ||
+      current.duration <= 10
+    ) {
+      return;
     }
-  }, [secondsLeft, intervalIndex]);
+
+    if (secondsLeft === 10) {
+      playTenSecondsVoice();
+    }
+  }, [secondsLeft]);
+
+  /*
+   * MOTIVATIONAL VOICES
+   *
+   * IMPORTANT:
+   * No encouragement is allowed during
+   * the final 10 seconds of a run.
+   */
+
+  useEffect(() => {
+    if (
+      !started ||
+      paused ||
+      completed ||
+      current.type !== 'RUN' ||
+      current.duration < 60
+    ) {
+      return;
+    }
+
+    /*
+     * The 10-second countdown always has priority.
+     */
+    if (secondsLeft <= 10) {
+      return;
+    }
+
+    const elapsed =
+      current.duration - secondsLeft;
+
+    if (elapsed === 60) {
+      playEncourage1();
+    } else if (elapsed === 120) {
+      playEncourage2();
+    } else if (elapsed === 180) {
+      playEncourage3();
+    } else if (elapsed === 240) {
+      playEncourage4();
+    } else if (elapsed === 300) {
+      playEncourage5();
+    } else if (elapsed === 360) {
+      playEncourage6();
+    } else if (elapsed === 420) {
+      playEncourage7();
+    } else if (elapsed === 480) {
+      playEncourage8();
+    } else if (elapsed === 540) {
+      playEncourage9();
+    } else if (elapsed === 600) {
+      playEncourage10();
+    }
+  }, [secondsLeft]);
+
+  /*
+   * RECOVERY VOICES
+   */
+
+  useEffect(() => {
+    if (
+      !started ||
+      paused ||
+      completed ||
+      current.type !== 'WALK' ||
+      current.name === 'Warm-up' ||
+      current.name === 'Cool-down' ||
+      current.duration < 60
+    ) {
+      return;
+    }
+
+    const elapsed =
+      current.duration - secondsLeft;
+
+    if (elapsed === 30) {
+      if (intervalIndex === 2) {
+        playRecovery1();
+      } else if (intervalIndex === 4) {
+        playRecovery2();
+      } else if (intervalIndex === 6) {
+        playRecovery3();
+      } else if (intervalIndex === 8) {
+        playRecovery4();
+      } else if (intervalIndex === 10) {
+        playRecovery5();
+      } else if (intervalIndex === 12) {
+        playRecovery6();
+      } else if (intervalIndex === 14) {
+        playRecovery7();
+      } else if (intervalIndex === 16) {
+        playRecovery8();
+      } else if (intervalIndex === 18) {
+        playRecovery9();
+      } else {
+        playRecovery10();
+      }
+    }
+  }, [secondsLeft]);
+
+  /*
+   * MAIN TIMER
+   */
 
   useEffect(() => {
     if (completed || !started || paused) {
       return;
     }
 
+    const startTimeRef = {
+      current: Date.now(),
+    };
+
+    const intervalStartSeconds =
+      secondsLeft;
+
     const timer = setInterval(() => {
-      setSecondsLeft((previous) => {
-        if (previous <= 1) {
-          clearInterval(timer);
+      const elapsedSeconds =
+        Math.floor(
+          (Date.now() -
+            startTimeRef.current) /
+            1000
+        );
 
-          if (intervalIndex < workout.length - 1) {
-            const nextIndex = intervalIndex + 1;
+      const newSecondsLeft =
+        intervalStartSeconds -
+        elapsedSeconds;
 
-            setIntervalIndex(nextIndex);
+      if (newSecondsLeft > 0) {
+        setSecondsLeft(newSecondsLeft);
+        return;
+      }
 
-            return workout[nextIndex].duration;
-          }
+      clearInterval(timer);
 
-          saveCompletedRun();
+      if (
+        intervalIndex <
+        workout.length - 1
+      ) {
+        const nextIndex =
+          intervalIndex + 1;
 
-          setCompleted(true);
+        setIntervalIndex(nextIndex);
 
-          Speech.stop();
+        setSecondsLeft(
+          workout[nextIndex].duration
+        );
+      } else {
+        setSecondsLeft(0);
 
-          if (isFinalRun) {
-            Speech.speak(
-              'Programme complete. Congratulations!'
-            );
-          } else {
-            Speech.speak(
-              `Run ${runNumber} complete. Well done.`
-            );
-          }
+        saveCompletedRun();
 
-          return 0;
+        setCompleted(true);
+
+        Speech.stop();
+
+        stopCurrentAudio();
+
+        if (isFinalRun) {
+          Speech.speak(
+            'Programme complete. Congratulations!'
+          );
+        } else {
+          Speech.speak(
+            `Run ${runNumber} complete. Well done.`
+          );
         }
+      }
+    }, 250);
 
-        return previous - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
+    return () =>
+      clearInterval(timer);
   }, [
     intervalIndex,
     completed,
@@ -245,26 +562,38 @@ export default function RunScreen() {
   async function saveCompletedRun() {
     try {
       const saved =
-        await AsyncStorage.getItem(PROGRESS_KEY);
+        await AsyncStorage.getItem(
+          PROGRESS_KEY
+        );
 
       const progress = saved
         ? JSON.parse(saved)
         : {};
 
       const weekProgress =
-        Array.isArray(progress[weekNumber])
+        Array.isArray(
+          progress[weekNumber]
+        )
           ? progress[weekNumber]
           : [];
 
-      if (!weekProgress.includes(runNumber)) {
-        weekProgress.push(runNumber);
+      if (
+        !weekProgress.includes(
+          runNumber
+        )
+      ) {
+        weekProgress.push(
+          runNumber
+        );
       }
 
       weekProgress.sort(
-        (a: number, b: number) => a - b
+        (a: number, b: number) =>
+          a - b
       );
 
-      progress[weekNumber] = weekProgress;
+      progress[weekNumber] =
+        weekProgress;
 
       await AsyncStorage.setItem(
         PROGRESS_KEY,
@@ -280,66 +609,104 @@ export default function RunScreen() {
 
   function backToJourney() {
     Speech.stop();
+    stopCurrentAudio();
     router.back();
   }
 
-  const minutes = Math.floor(secondsLeft / 60);
-  const seconds = secondsLeft % 60;
+  const minutes =
+    Math.floor(secondsLeft / 60);
+
+  const seconds =
+    secondsLeft % 60;
 
   const timerText =
-    `${minutes.toString().padStart(2, '0')}:` +
-    `${seconds.toString().padStart(2, '0')}`;
+    `${minutes
+      .toString()
+      .padStart(2, '0')}:` +
+    `${seconds
+      .toString()
+      .padStart(2, '0')}`;
 
   /*
-   * ==========================================
    * COMPLETION SCREENS
-   * ==========================================
    */
 
   if (completed) {
 
-    /*
-     * FINAL CONGRATULATIONS SCREEN
-     */
     if (achievementStage === 1) {
       return (
-        <SafeAreaView style={styles.safeArea}>
-          <View style={styles.achievementContainer}>
+        <SafeAreaView
+          style={styles.safeArea}
+        >
+          <View
+            style={
+              styles.achievementContainer
+            }
+          >
 
-            <Text style={styles.congratulationsTitle}>
+            <Text
+              style={
+                styles.congratulationsTitle
+              }
+            >
               CONGRATULATIONS!
             </Text>
 
-            <Text style={styles.congratulationsSubtitle}>
+            <Text
+              style={
+                styles.congratulationsSubtitle
+              }
+            >
               YOU DID IT!
             </Text>
 
             <Image
-  source={{ uri: FINAL_GIF }}
-  style={styles.finalGif}
-  resizeMode="contain"
-/>
+              source={{
+                uri: FINAL_GIF,
+              }}
+              style={styles.finalGif}
+              resizeMode="contain"
+            />
 
-<Text style={styles.finalSmallMessage}>
-  27 RUNS COMPLETE
-</Text>
+            <Text
+              style={
+                styles.finalSmallMessage
+              }
+            >
+              27 RUNS COMPLETE
+            </Text>
 
-<Text style={styles.starMessage}>
-  YOU ARE A STAR!
-</Text>
+            <Text
+              style={styles.starMessage}
+            >
+              YOU ARE A STAR!
+            </Text>
 
-<Text style={styles.trophy}>
-  🏆
-</Text>
+            <Text
+              style={styles.trophy}
+            >
+              🏆
+            </Text>
 
-<Text style={styles.finalProgramme}>
-  ZERO TO THIRTY
-</Text>
+            <Text
+              style={
+                styles.finalProgramme
+              }
+            >
+              ZERO TO THIRTY
+            </Text>
+
             <Pressable
               style={styles.backButton}
-              onPress={backToJourney}
+              onPress={
+                backToJourney
+              }
             >
-              <Text style={styles.backButtonText}>
+              <Text
+                style={
+                  styles.backButtonText
+                }
+              >
                 BACK TO JOURNEY
               </Text>
             </Pressable>
@@ -349,33 +716,54 @@ export default function RunScreen() {
       );
     }
 
-    /*
-     * PROGRAMME COMPLETE
-     */
     if (isFinalRun) {
       return (
-        <SafeAreaView style={styles.safeArea}>
-          <View style={styles.achievementContainer}>
+        <SafeAreaView
+          style={styles.safeArea}
+        >
+          <View
+            style={
+              styles.achievementContainer
+            }
+          >
 
-            <Text style={styles.programmeCompleteTitle}>
+            <Text
+              style={
+                styles.programmeCompleteTitle
+              }
+            >
               PROGRAMME
             </Text>
 
-            <Text style={styles.programmeCompleteTitle}>
+            <Text
+              style={
+                styles.programmeCompleteTitle
+              }
+            >
               COMPLETE!
             </Text>
 
             <Image
-              source={{ uri: SUCCESS_GIF }}
+              source={{
+                uri: SUCCESS_GIF,
+              }}
               style={styles.achievementGif}
               resizeMode="contain"
             />
 
-            <Text style={styles.achievementMessage}>
+            <Text
+              style={
+                styles.achievementMessage
+              }
+            >
               YOU'VE COMPLETED
             </Text>
 
-            <Text style={styles.achievementSubMessage}>
+            <Text
+              style={
+                styles.achievementSubMessage
+              }
+            >
               RUN 27 OF 27
             </Text>
 
@@ -385,7 +773,11 @@ export default function RunScreen() {
                 setAchievementStage(1);
               }}
             >
-              <Text style={styles.claimButtonText}>
+              <Text
+                style={
+                  styles.claimButtonText
+                }
+              >
                 CLAIM YOUR ACHIEVEMENT
               </Text>
             </Pressable>
@@ -395,36 +787,59 @@ export default function RunScreen() {
       );
     }
 
-    /*
-     * NORMAL RUN COMPLETE
-     */
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.achievementContainer}>
+      <SafeAreaView
+        style={styles.safeArea}
+      >
+        <View
+          style={
+            styles.achievementContainer
+          }
+        >
 
-          <Text style={styles.runCompleteTitle}>
+          <Text
+            style={
+              styles.runCompleteTitle
+            }
+          >
             RUN COMPLETE!
           </Text>
 
           <Image
-            source={{ uri: SUCCESS_GIF }}
+            source={{
+              uri: SUCCESS_GIF,
+            }}
             style={styles.achievementGif}
             resizeMode="contain"
           />
 
-          <Text style={styles.achievementMessage}>
+          <Text
+            style={
+              styles.achievementMessage
+            }
+          >
             WELL DONE!
           </Text>
 
-          <Text style={styles.achievementSubMessage}>
+          <Text
+            style={
+              styles.achievementSubMessage
+            }
+          >
             WEEK {weekNumber} • RUN {runNumber}
           </Text>
 
           <Pressable
             style={styles.backButton}
-            onPress={backToJourney}
+            onPress={
+              backToJourney
+            }
           >
-            <Text style={styles.backButtonText}>
+            <Text
+              style={
+                styles.backButtonText
+              }
+            >
               BACK TO JOURNEY
             </Text>
           </Pressable>
@@ -435,13 +850,13 @@ export default function RunScreen() {
   }
 
   /*
-   * ==========================================
    * NORMAL RUN SCREEN
-   * ==========================================
    */
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView
+      style={styles.safeArea}
+    >
       <View style={styles.container}>
 
         <Text style={styles.week}>
@@ -462,7 +877,9 @@ export default function RunScreen() {
           {timerText}
         </Text>
 
-        <Text style={styles.instruction}>
+        <Text
+          style={styles.instruction}
+        >
           {current.name === 'Warm-up'
             ? 'WALK'
             : current.name === 'Cool-down'
@@ -477,11 +894,18 @@ export default function RunScreen() {
               setStarted(true);
               setPaused(false);
             } else {
-              setPaused((previous) => !previous);
+              setPaused(
+                (previous) =>
+                  !previous
+              );
             }
           }}
         >
-          <Text style={styles.startButtonText}>
+          <Text
+            style={
+              styles.startButtonText
+            }
+          >
             {!started
               ? 'START RUN'
               : paused
@@ -494,15 +918,18 @@ export default function RunScreen() {
           style={styles.quitButton}
           onPress={() => {
             Speech.stop();
+            stopCurrentAudio();
             router.back();
           }}
         >
-          <Text style={styles.quitButtonText}>
+          <Text
+            style={
+              styles.quitButtonText
+            }
+          >
             QUIT RUN
           </Text>
         </Pressable>
-
-        
 
       </View>
     </SafeAreaView>
@@ -550,10 +977,6 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
     marginTop: 15,
   },
-
-  /*
-   * ACHIEVEMENT SCREENS
-   */
 
   achievementContainer: {
     flex: 1,
@@ -646,15 +1069,6 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
 
-  finalMessage: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '900',
-    textAlign: 'center',
-    marginTop: 5,
-    letterSpacing: 1,
-  },
-
   finalProgramme: {
     color: '#FF8C00',
     fontSize: 30,
@@ -672,18 +1086,19 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
   },
 
-starMessage: {
-  color: '#FF8C00',
-  fontSize: 32,
-  fontWeight: '900',
-  textAlign: 'center',
-  marginTop: 10,
-},
+  starMessage: {
+    color: '#FF8C00',
+    fontSize: 32,
+    fontWeight: '900',
+    textAlign: 'center',
+    marginTop: 10,
+  },
 
-trophy: {
-  fontSize: 70,
-  marginTop: 5,
-},
+  trophy: {
+    fontSize: 70,
+    marginTop: 5,
+  },
+
   backButton: {
     width: '100%',
     maxWidth: 500,
@@ -701,10 +1116,6 @@ trophy: {
     fontWeight: '900',
     letterSpacing: 1,
   },
-
-  /*
-   * RUN CONTROLS
-   */
 
   startButton: {
     width: '100%',
@@ -741,10 +1152,4 @@ trophy: {
     fontWeight: '900',
     letterSpacing: 1,
   },
-
-  /*
-   * TEMPORARY TEST CONTROLS
-   */
-
-  
 });
