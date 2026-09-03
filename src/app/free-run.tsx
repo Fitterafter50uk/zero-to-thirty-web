@@ -1,9 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import * as Location from 'expo-location';
 import {
   Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -14,11 +14,18 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 const PROGRESS_KEY = 'zero_to_thirty_progress';
 
-const primaryColor = '#FF8C00';
-const backgroundColor = '#111111';
-const cardColor = 'rgba(0,0,0,0.72)';
-const textPrimary = '#FFFFFF';
-const textSecondary = '#AAAAAA';
+const ORANGE = '#FF8C00';
+const GREEN = '#22C55E';
+const RED = '#EF4444';
+const BLACK = '#111111';
+const CARD = 'rgba(0,0,0,0.72)';
+const WHITE = '#FFFFFF';
+const GREY = '#AAAAAA';
+
+type LastRun = {
+  distance: number;
+  seconds: number;
+};
 
 export default function FreeRunScreen() {
   const router = useRouter();
@@ -27,6 +34,11 @@ export default function FreeRunScreen() {
   const [running, setRunning] = useState(false);
   const [finished, setFinished] = useState(false);
 
+  const [gpsDistance, setGpsDistance] = useState(0);
+  const gpsDistanceRef = useRef(0);
+
+  const [gpsStatus, setGpsStatus] = useState('GPS OFF');
+
   const [totalKm, setTotalKm] = useState(0);
   const [totalRuns, setTotalRuns] = useState(0);
   const [totalSeconds, setTotalSeconds] = useState(0);
@@ -34,26 +46,21 @@ export default function FreeRunScreen() {
   const [personalBestDistance, setPersonalBestDistance] = useState(0);
   const [personalBestTime, setPersonalBestTime] = useState(0);
 
-  const [lastRuns, setLastRuns] = useState<
-    Array<{
-      distance: number;
-      seconds: number;
-    }>
-  >([]);
+  const [lastRuns, setLastRuns] = useState<LastRun[]>([]);
 
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
-  const [gpsDistance, setGpsDistance] = useState(0);
-  const [gpsStatus, setGpsStatus] = useState('GPS OFF');
-
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const locationSubscription =
-    useRef<Location.LocationSubscription | null>(null);
+  const watchIdRef = useRef<number | null>(null);
 
-  const lastLocation = useRef<Location.LocationObject | null>(null);
+  const lastPositionRef = useRef<{
+    latitude: number;
+    longitude: number;
+    accuracy: number;
+  } | null>(null);
 
-  const gpsDistanceRef = useRef(0);
+  const gpsStartedRef = useRef(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -61,13 +68,77 @@ export default function FreeRunScreen() {
     }, [])
   );
 
-  const stopGps = () => {
-    if (locationSubscription.current) {
-      locationSubscription.current.remove();
-      locationSubscription.current = null;
+  useEffect(() => {
+    return () => {
+      stopGps();
+
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (running) {
+      timerRef.current = setInterval(() => {
+        setSeconds((current) => current + 1);
+      }, 1000);
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
     }
 
-    lastLocation.current = null;
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [running]);
+
+  const loadStats = async () => {
+    try {
+      const stored = await AsyncStorage.getItem(PROGRESS_KEY);
+
+      if (!stored) {
+        setTotalKm(0);
+        setTotalRuns(0);
+        setTotalSeconds(0);
+        setPersonalBestDistance(0);
+        setPersonalBestTime(0);
+        setLastRuns([]);
+        return;
+      }
+
+      const progress = JSON.parse(stored);
+
+      setTotalKm(Number(progress.freeRunKm || 0));
+      setTotalRuns(Number(progress.freeRunRuns || 0));
+      setTotalSeconds(Number(progress.freeRunTotalSeconds || 0));
+
+      setPersonalBestDistance(
+        Number(progress.freeRunPersonalBestDistance || 0)
+      );
+
+      setPersonalBestTime(
+        Number(progress.freeRunPersonalBestTime || 0)
+      );
+
+      setLastRuns(
+        Array.isArray(progress.freeRunLastRuns)
+          ? progress.freeRunLastRuns
+          : []
+      );
+    } catch (error) {
+      console.log('Could not load free run stats', error);
+    }
+  };
+
+  const toRadians = (value: number) => {
+    return (value * Math.PI) / 180;
   };
 
   const calculateDistanceKm = (
@@ -76,9 +147,6 @@ export default function FreeRunScreen() {
     lat2: number,
     lon2: number
   ) => {
-    const toRadians = (value: number) =>
-      (value * Math.PI) / 180;
-
     const earthRadiusKm = 6371;
 
     const dLat = toRadians(lat2 - lat1);
@@ -100,256 +168,124 @@ export default function FreeRunScreen() {
     return earthRadiusKm * c;
   };
 
-  const startGps = async () => {
+  const stopGps = () => {
+    if (
+      Platform.OS === 'web' &&
+      typeof navigator !== 'undefined' &&
+      navigator.geolocation &&
+      watchIdRef.current !== null
+    ) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+    }
+
+    watchIdRef.current = null;
+    lastPositionRef.current = null;
+    gpsStartedRef.current = false;
+  };
+
+  const startGps = async (): Promise<boolean> => {
+    if (Platform.OS !== 'web') {
+      setGpsStatus('GPS NOT AVAILABLE');
+      return false;
+    }
+
+    if (
+      typeof navigator === 'undefined' ||
+      !navigator.geolocation
+    ) {
+      setGpsStatus('GPS NOT AVAILABLE');
+      Alert.alert(
+        'GPS NOT AVAILABLE',
+        'This device/browser does not provide GPS location.'
+      );
+      return false;
+    }
+
     try {
-      const { status } =
-        await Location.requestForegroundPermissionsAsync();
-
-      if (status !== 'granted') {
-        setGpsStatus('GPS DENIED');
-        return;
-      }
-
-      const servicesEnabled =
-        await Location.hasServicesEnabledAsync();
-
-      if (!servicesEnabled) {
-        setGpsStatus('GPS OFF');
-        Alert.alert(
-          'GPS IS OFF',
-          'Please turn on Location/GPS on your phone and start the run again.'
-        );
-        return;
-      }
-
       setGpsStatus('GPS SEARCHING');
+      lastPositionRef.current = null;
 
-      lastLocation.current = null;
+      const success = (position: GeolocationPosition) => {
+        const latitude = position.coords.latitude;
+        const longitude = position.coords.longitude;
+        const accuracy = position.coords.accuracy ?? 999;
 
-      /*
-       * Get an immediate location first.
-       * This prevents the app waiting indefinitely for
-       * watchPositionAsync to produce its first usable reading.
-       */
-      try {
-        const initialLocation =
-          await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.High,
-            mayShowUserSettingsDialog: true,
-          });
-
-        if (initialLocation?.coords) {
-          lastLocation.current = initialLocation;
-          setGpsStatus('GPS ACTIVE');
+        if (
+          !Number.isFinite(latitude) ||
+          !Number.isFinite(longitude)
+        ) {
+          return;
         }
-      } catch (initialError) {
-        console.log(
-          'Initial GPS reading failed',
-          initialError
-        );
-      }
 
-      locationSubscription.current =
-        await Location.watchPositionAsync(
-          {
-            accuracy: Location.Accuracy.BestForNavigation,
-            timeInterval: 1000,
-            distanceInterval: 1,
-            mayShowUserSettingsDialog: true,
-          },
-          (location) => {
-            if (!location || !location.coords) {
-              return;
-            }
+        setGpsStatus('GPS ACTIVE');
 
-            const {
-              latitude,
-              longitude,
-              accuracy,
-            } = location.coords;
+        if (lastPositionRef.current) {
+          const segmentKm = calculateDistanceKm(
+            lastPositionRef.current.latitude,
+            lastPositionRef.current.longitude,
+            latitude,
+            longitude
+          );
 
-            if (
-              !Number.isFinite(latitude) ||
-              !Number.isFinite(longitude)
-            ) {
-              return;
-            }
-
-            /*
-             * Do NOT use the old 50m rejection.
-             *
-             * Phone GPS can temporarily report 60-100m accuracy,
-             * especially when starting indoors or beside buildings.
-             * Those readings can still be useful for establishing
-             * the GPS position.
-             */
-            setGpsStatus(
-              accuracy != null && accuracy > 100
-                ? 'GPS SEARCHING'
-                : 'GPS ACTIVE'
-            );
-
-            if (!lastLocation.current) {
-              lastLocation.current = location;
-              return;
-            }
-
-            const previous =
-              lastLocation.current.coords;
-
-            const segmentKm =
-              calculateDistanceKm(
-                previous.latitude,
-                previous.longitude,
-                latitude,
-                longitude
-              );
-
-            /*
-             * Ignore tiny GPS jitter.
-             *
-             * 5 metres is enough to prevent stationary GPS drift
-             * being counted as running distance, while still allowing
-             * normal walking/running movement to accumulate.
-             */
-            if (segmentKm < 0.005) {
-              /*
-               * Keep the latest GPS point so that the next movement
-               * calculation is based on the newest position.
-               */
-              lastLocation.current = location;
-              return;
-            }
-
-            /*
-             * Ignore impossible jumps.
-             *
-             * 0.25km in one GPS update would mean 15km/h if updates
-             * arrive every minute, and considerably faster for our
-             * normal 1-second updates. This protects against GPS
-             * glitches without imposing the old 50m accuracy cutoff.
-             */
-            if (segmentKm > 0.25) {
-              console.log(
-                'Ignoring GPS jump:',
-                segmentKm,
-                'km'
-              );
-
-              /*
-               * Reset the reference point after a bad GPS jump so
-               * the next good reading can continue normally.
-               */
-              lastLocation.current = location;
-              return;
-            }
-
+          /*
+           * Ignore tiny GPS jitter.
+           * 0.003 km = 3 metres.
+           */
+          if (segmentKm >= 0.003 && segmentKm <= 0.5) {
             gpsDistanceRef.current += segmentKm;
 
             setGpsDistance(
               gpsDistanceRef.current
             );
+          }
+        }
 
-            lastLocation.current = location;
+        lastPositionRef.current = {
+          latitude,
+          longitude,
+          accuracy,
+        };
+      };
+
+      const error = (error: GeolocationPositionError) => {
+        console.log(
+          'Browser GPS error:',
+          error.code,
+          error.message
+        );
+
+        if (error.code === 1) {
+          setGpsStatus('GPS DENIED');
+        } else if (error.code === 2) {
+          setGpsStatus('GPS SEARCHING');
+        } else {
+          setGpsStatus('GPS ERROR');
+        }
+      };
+
+      watchIdRef.current =
+        navigator.geolocation.watchPosition(
+          success,
+          error,
+          {
+            enableHighAccuracy: true,
+            maximumAge: 1000,
+            timeout: 15000,
           }
         );
-    } catch (error) {
-      console.log(
-        'Free Run GPS error',
-        error
-      );
 
+      gpsStartedRef.current = true;
+
+      return true;
+    } catch (error) {
+      console.log('Could not start browser GPS', error);
       setGpsStatus('GPS ERROR');
-
-      Alert.alert(
-        'GPS ERROR',
-        'The phone could not start GPS tracking. Please make sure Location is enabled and try again.'
-      );
-    }
-  };
-
-  useEffect(() => {
-    return () => {
-      stopGps();
-
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (running) {
-      timerRef.current = setInterval(() => {
-        setSeconds((current) => current + 1);
-      }, 1000);
-    } else if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-
-    return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, [running]);
-
-  const loadStats = async () => {
-    try {
-      const stored =
-        await AsyncStorage.getItem(PROGRESS_KEY);
-
-      if (!stored) {
-        setTotalKm(0);
-        setTotalRuns(0);
-        setTotalSeconds(0);
-        setPersonalBestDistance(0);
-        setPersonalBestTime(0);
-        setLastRuns([]);
-        return;
-      }
-
-      const progress = JSON.parse(stored);
-
-      setTotalKm(Number(progress.freeRunKm || 0));
-      setTotalRuns(Number(progress.freeRunRuns || 0));
-      setTotalSeconds(
-        Number(progress.freeRunTotalSeconds || 0)
-      );
-
-      setPersonalBestDistance(
-        Number(
-          progress.freeRunPersonalBestDistance || 0
-        )
-      );
-
-      setPersonalBestTime(
-        Number(
-          progress.freeRunPersonalBestTime || 0
-        )
-      );
-
-      setLastRuns(
-        Array.isArray(progress.freeRunLastRuns)
-          ? progress.freeRunLastRuns
-          : []
-      );
-    } catch (error) {
-      console.log(
-        'Could not load free run stats',
-        error
-      );
+      return false;
     }
   };
 
   const formatTime = (value: number) => {
-    const total = Math.max(
-      0,
-      Math.floor(value)
-    );
+    const total = Math.max(0, Math.floor(value));
 
     const hours = Math.floor(total / 3600);
 
@@ -377,15 +313,21 @@ export default function FreeRunScreen() {
   };
 
   const startRun = async () => {
+    stopGps();
+
     setSeconds(0);
     setFinished(false);
 
     setGpsDistance(0);
     gpsDistanceRef.current = 0;
-    lastLocation.current = null;
+
     setGpsStatus('GPS STARTING');
 
-    await startGps();
+    const gpsStarted = await startGps();
+
+    if (!gpsStarted) {
+      return;
+    }
 
     setRunning(true);
   };
@@ -393,13 +335,13 @@ export default function FreeRunScreen() {
   const endRun = () => {
     setRunning(false);
     stopGps();
-    setGpsStatus('GPS OFF');
     setFinished(true);
+    setGpsStatus('GPS OFF');
   };
 
   const saveRun = async () => {
     const km = Number(
-      gpsDistance.toFixed(2)
+      gpsDistanceRef.current.toFixed(2)
     );
 
     if (!Number.isFinite(km) || km <= 0) {
@@ -471,7 +413,7 @@ export default function FreeRunScreen() {
 
       const newRun = {
         distance: km,
-        seconds: seconds,
+        seconds,
       };
 
       const newLastRuns = [
@@ -509,22 +451,26 @@ export default function FreeRunScreen() {
         newPBDistance
       );
 
-      setPersonalBestTime(
-        newPBTime
-      );
+      setPersonalBestTime(newPBTime);
 
       setLastRuns(newLastRuns);
 
+      setRunning(false);
       setFinished(false);
+
+      stopGps();
+
       setGpsDistance(0);
       gpsDistanceRef.current = 0;
+
       setGpsStatus('GPS OFF');
       setSeconds(0);
 
       Alert.alert(
         'RUN SAVED',
-        km.toFixed(2) +
-          ' KM added to your Free Run stats.'
+        `${km.toFixed(
+          2
+        )} KM added to your Free Run stats.`
       );
     } catch (error) {
       console.log(
@@ -571,7 +517,6 @@ export default function FreeRunScreen() {
 
       delete progress.extraRuns;
       delete progress.extraKm;
-
       delete progress.longestFreeRun;
 
       await AsyncStorage.setItem(
@@ -585,12 +530,13 @@ export default function FreeRunScreen() {
 
       setPersonalBestDistance(0);
       setPersonalBestTime(0);
-
       setLastRuns([]);
 
       setFinished(false);
+
       setGpsDistance(0);
       gpsDistanceRef.current = 0;
+
       setGpsStatus('GPS OFF');
       setSeconds(0);
 
@@ -629,6 +575,188 @@ export default function FreeRunScreen() {
           RUN YOUR OWN RUN
         </Text>
 
+        {/* ========================= */}
+        {/* FREE RUN */}
+        {/* ========================= */}
+
+        <View style={styles.sectionHeading}>
+          <Text style={styles.sectionHeadingText}>
+            FREE RUN
+          </Text>
+        </View>
+
+        <View style={styles.gpsBox}>
+          <Text style={styles.gpsTitle}>
+            RUNNING DISTANCE
+          </Text>
+
+          <Text style={styles.gpsValue}>
+            {gpsDistance.toFixed(2)} KM
+          </Text>
+
+          <Text
+            style={[
+              styles.gpsStatus,
+              gpsStatus === 'GPS ACTIVE' &&
+                styles.gpsActive,
+              gpsStatus === 'GPS ERROR' &&
+                styles.gpsError,
+              gpsStatus === 'GPS DENIED' &&
+                styles.gpsError,
+            ]}
+          >
+            {gpsStatus}
+          </Text>
+        </View>
+
+        <View style={styles.timerBox}>
+          <Text style={styles.timer}>
+            {formatTime(seconds)}
+          </Text>
+
+          <Text style={styles.timerLabel}>
+            RUN TIME
+          </Text>
+        </View>
+
+        {!running && !finished && (
+          <Pressable
+            style={({ pressed }) => [
+              styles.startButton,
+              pressed &&
+                styles.startButtonPressed,
+            ]}
+            onPress={startRun}
+          >
+            <Text style={styles.startText}>
+              START RUN
+            </Text>
+          </Pressable>
+        )}
+
+        {running && (
+          <Pressable
+            style={({ pressed }) => [
+              styles.endButton,
+              pressed &&
+                styles.endButtonPressed,
+            ]}
+            onPress={endRun}
+          >
+            <Text style={styles.endText}>
+              END RUN
+            </Text>
+          </Pressable>
+        )}
+
+        {finished && (
+          <View style={styles.saveBox}>
+            <Text style={styles.saveTitle}>
+              RUN COMPLETE
+            </Text>
+
+            <View style={styles.completeStats}>
+              <View style={styles.completeStat}>
+                <Text
+                  style={styles.completeNumber}
+                >
+                  {gpsDistance.toFixed(2)}
+                </Text>
+
+                <Text
+                  style={styles.completeLabel}
+                >
+                  KM
+                </Text>
+              </View>
+
+              <View style={styles.completeStat}>
+                <Text
+                  style={styles.completeNumber}
+                >
+                  {formatTime(seconds)}
+                </Text>
+
+                <Text
+                  style={styles.completeLabel}
+                >
+                  TIME
+                </Text>
+              </View>
+            </View>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.saveButton,
+                pressed &&
+                  styles.saveButtonPressed,
+              ]}
+              onPress={saveRun}
+            >
+              <Text style={styles.saveText}>
+                SAVE RUN
+              </Text>
+            </Pressable>
+          </View>
+        )}
+
+        {/* ========================= */}
+        {/* LAST 3 RUNS */}
+        {/* ========================= */}
+
+        <View style={styles.sectionHeading}>
+          <Text style={styles.sectionHeadingText}>
+            LAST 3 FREE RUNS
+          </Text>
+        </View>
+
+        {lastRuns.length === 0 ? (
+          <View style={styles.emptyBox}>
+            <Text style={styles.emptyText}>
+              NO FREE RUNS RECORDED YET
+            </Text>
+          </View>
+        ) : (
+          lastRuns.map((run, index) => (
+            <View
+              key={`${run.seconds}-${run.distance}-${index}`}
+              style={styles.lastRunBox}
+            >
+              <View style={styles.lastRunLeft}>
+                <View style={styles.runBadge}>
+                  <Text style={styles.runBadgeText}>
+                    {index + 1}
+                  </Text>
+                </View>
+
+                <View>
+                  <Text
+                    style={styles.lastRunNumber}
+                  >
+                    RUN {index + 1}
+                  </Text>
+
+                  <Text
+                    style={styles.lastRunTime}
+                  >
+                    {formatTime(run.seconds)}
+                  </Text>
+                </View>
+              </View>
+
+              <Text
+                style={styles.lastRunDistance}
+              >
+                {Number(run.distance).toFixed(2)} KM
+              </Text>
+            </View>
+          ))
+        )}
+
+        {/* ========================= */}
+        {/* STATS */}
+        {/* ========================= */}
+
         <View style={styles.sectionHeading}>
           <Text style={styles.sectionHeadingText}>
             FREE RUN STATS
@@ -658,7 +786,7 @@ export default function FreeRunScreen() {
             </Text>
 
             <Text
-              style={styles.resetConfirmText}
+              style={styles.resetConfirmDescription}
             >
               This will clear your Free Run
               kilometres, runs, total time,
@@ -671,9 +799,7 @@ export default function FreeRunScreen() {
               style={styles.resetConfirmButtons}
             >
               <Pressable
-                style={
-                  styles.cancelResetButton
-                }
+                style={styles.cancelResetButton}
                 onPress={() =>
                   setShowResetConfirm(false)
                 }
@@ -733,6 +859,10 @@ export default function FreeRunScreen() {
           </View>
         </View>
 
+        {/* ========================= */}
+        {/* PERSONAL BESTS */}
+        {/* ========================= */}
+
         <View style={styles.pbBox}>
           <View style={styles.pbLeft}>
             <Text style={styles.trophy}>
@@ -777,124 +907,14 @@ export default function FreeRunScreen() {
           </Text>
         </View>
 
-        <View style={styles.sectionHeading}>
-          <Text style={styles.sectionHeadingText}>
-            LAST 3 FREE RUNS
-          </Text>
-        </View>
-
-        {lastRuns.length === 0 ? (
-          <View style={styles.emptyBox}>
-            <Text style={styles.emptyText}>
-              NO FREE RUNS RECORDED YET
-            </Text>
-          </View>
-        ) : (
-          lastRuns.map((run, index) => (
-            <View
-              key={`${run.seconds}-${run.distance}-${index}`}
-              style={styles.lastRunBox}
-            >
-              <View>
-                <Text
-                  style={styles.lastRunNumber}
-                >
-                  RUN {index + 1}
-                </Text>
-
-                <Text
-                  style={styles.lastRunTime}
-                >
-                  {formatTime(run.seconds)}
-                </Text>
-              </View>
-
-              <Text
-                style={styles.lastRunDistance}
-              >
-                {Number(run.distance).toFixed(2)} KM
-              </Text>
-            </View>
-          ))
-        )}
-
-        <View style={styles.sectionHeading}>
-          <Text style={styles.sectionHeadingText}>
-            FREE RUN
-          </Text>
-        </View>
-
-        <View style={styles.gpsBox}>
-          <Text style={styles.gpsTitle}>
-            RUNNING DISTANCE
-          </Text>
-
-          <Text style={styles.gpsValue}>
-            {gpsDistance.toFixed(2)} KM
-          </Text>
-
-          <Text style={styles.gpsStatus}>
-            {gpsStatus}
-          </Text>
-        </View>
-
-        <View style={styles.timerBox}>
-          <Text style={styles.timer}>
-            {formatTime(seconds)}
-          </Text>
-        </View>
-
-        {!running && !finished && (
-          <Pressable
-            style={styles.startButton}
-            onPress={startRun}
-          >
-            <Text style={styles.startText}>
-              START RUN
-            </Text>
-          </Pressable>
-        )}
-
-        {running && (
-          <Pressable
-            style={styles.endButton}
-            onPress={endRun}
-          >
-            <Text style={styles.endText}>
-              END RUN
-            </Text>
-          </Pressable>
-        )}
-
-        {finished && (
-          <View style={styles.saveBox}>
-            <Text style={styles.saveTitle}>
-              RUN COMPLETE
-            </Text>
-
-            <Text style={styles.saveTime}>
-              Time: {formatTime(seconds)}
-            </Text>
-
-            <Text style={styles.gpsDistance}>
-              {gpsDistance.toFixed(2)} KM
-            </Text>
-
-            <Pressable
-              style={styles.saveButton}
-              onPress={saveRun}
-            >
-              <Text style={styles.saveText}>
-                SAVE RUN
-              </Text>
-            </Pressable>
-          </View>
-        )}
-
         <Text style={styles.footer}>
           KEEP MOVING FORWARD
         </Text>
       </ScrollView>
+
+      {/* ========================= */}
+      {/* BOTTOM NAV */}
+      {/* ========================= */}
 
       <View style={styles.bottomNav}>
         <Pressable
@@ -977,21 +997,21 @@ export default function FreeRunScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#111111',
+    backgroundColor: BLACK,
   },
 
   container: {
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 22,
-    paddingBottom: 100,
+    paddingHorizontal: 18,
+    paddingTop: 20,
+    paddingBottom: 105,
     width: '100%',
     maxWidth: 700,
     alignSelf: 'center',
   },
 
   heading: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontSize: 34,
     fontWeight: '900',
     textAlign: 'center',
@@ -1005,11 +1025,12 @@ const styles = StyleSheet.create({
   },
 
   subheading: {
-    color: '#FF8C00',
-    fontSize: 23,
+    color: ORANGE,
+    fontSize: 22,
     fontWeight: '900',
     letterSpacing: 2,
-    marginTop: 6,
+    marginTop: 5,
+    textAlign: 'center',
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -1020,13 +1041,13 @@ const styles = StyleSheet.create({
 
   sectionHeading: {
     width: '100%',
-    backgroundColor: '#FF8C00',
+    backgroundColor: ORANGE,
     borderRadius: 10,
     minHeight: 44,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 27,
-    marginBottom: 12,
+    marginTop: 18,
+    marginBottom: 10,
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -1038,7 +1059,7 @@ const styles = StyleSheet.create({
   },
 
   sectionHeadingText: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontSize: 17,
     fontWeight: '900',
     letterSpacing: 1.2,
@@ -1051,36 +1072,36 @@ const styles = StyleSheet.create({
     textShadowRadius: 2,
   },
 
-  resetButton: {
+  gpsBox: {
     width: '100%',
-    backgroundColor: '#EF4444',
-    borderRadius: 10,
-    minHeight: 44,
+    backgroundColor: CARD,
+    borderWidth: 2,
+    borderColor: 'rgba(255,140,0,0.75)',
+    borderRadius: 16,
     alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
+    paddingVertical: 14,
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
       height: 3,
     },
-    shadowOpacity: 0.45,
-    shadowRadius: 3,
-    elevation: 4,
-    zIndex: 20,
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    elevation: 3,
   },
 
-  resetButtonPressed: {
-    opacity: 0.75,
-    transform: [{ scale: 0.98 }],
-  },
-
-  resetText: {
-    color: '#FFFFFF',
-    fontSize: 15,
+  gpsTitle: {
+    color: WHITE,
+    fontSize: 13,
     fontWeight: '900',
-    letterSpacing: 1,
-    textAlign: 'center',
+    letterSpacing: 1.2,
+  },
+
+  gpsValue: {
+    color: ORANGE,
+    fontSize: 38,
+    fontWeight: '900',
+    marginTop: 2,
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -1089,26 +1110,214 @@ const styles = StyleSheet.create({
     textShadowRadius: 2,
   },
 
-  resetConfirmBox: {
+  gpsStatus: {
+    color: GREY,
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1,
+    marginTop: 3,
+  },
+
+  gpsActive: {
+    color: GREEN,
+  },
+
+  gpsError: {
+    color: RED,
+  },
+
+  timerBox: {
     width: '100%',
-    backgroundColor: cardColor,
+    backgroundColor: CARD,
     borderWidth: 2,
-    borderColor: '#EF4444',
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 12,
+    borderColor: 'rgba(255,140,0,0.75)',
+    borderRadius: 16,
+    alignItems: 'center',
+    paddingVertical: 13,
+    marginTop: 10,
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
       height: 3,
     },
     shadowOpacity: 0.35,
-    shadowRadius: 3,
+    shadowRadius: 4,
     elevation: 3,
   },
 
-  resetConfirmTitle: {
-    color: '#FFFFFF',
+  timer: {
+    color: ORANGE,
+    fontSize: 48,
+    fontWeight: '900',
+    textShadowColor: '#000000',
+    textShadowOffset: {
+      width: 2,
+      height: 2,
+    },
+    textShadowRadius: 2,
+  },
+
+  timerLabel: {
+    color: GREY,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1.2,
+    marginTop: -2,
+  },
+
+  startButton: {
+    width: '100%',
+    backgroundColor: GREEN,
+    borderRadius: 14,
+    paddingVertical: 17,
+    marginTop: 10,
+    shadowColor: '#000000',
+    shadowOffset: {
+      width: 0,
+      height: 5,
+    },
+    shadowOpacity: 0.5,
+    shadowRadius: 5,
+    elevation: 7,
+  },
+
+  startButtonPressed: {
+    opacity: 0.78,
+    transform: [{ scale: 0.98 }],
+  },
+
+  startText: {
+    color: WHITE,
+    fontSize: 19,
+    fontWeight: '900',
+    textAlign: 'center',
+    letterSpacing: 1,
+    textShadowColor: '#000000',
+    textShadowOffset: {
+      width: 2,
+      height: 2,
+    },
+    textShadowRadius: 2,
+  },
+
+  endButton: {
+    width: '100%',
+    backgroundColor: RED,
+    borderRadius: 14,
+    paddingVertical: 17,
+    marginTop: 10,
+    shadowColor: '#000000',
+    shadowOffset: {
+      width: 0,
+      height: 5,
+    },
+    shadowOpacity: 0.5,
+    shadowRadius: 5,
+    elevation: 7,
+  },
+
+  endButtonPressed: {
+    opacity: 0.78,
+    transform: [{ scale: 0.98 }],
+  },
+
+  endText: {
+    color: WHITE,
+    fontSize: 19,
+    fontWeight: '900',
+    textAlign: 'center',
+    letterSpacing: 1,
+    textShadowColor: '#000000',
+    textShadowOffset: {
+      width: 2,
+      height: 2,
+    },
+    textShadowRadius: 2,
+  },
+
+  saveBox: {
+    width: '100%',
+    backgroundColor: CARD,
+    borderWidth: 2,
+    borderColor: GREEN,
+    borderRadius: 16,
+    padding: 16,
+    marginTop: 10,
+    shadowColor: '#000000',
+    shadowOffset: {
+      width: 0,
+      height: 3,
+    },
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+
+  saveTitle: {
+    color: WHITE,
+    fontSize: 21,
+    fontWeight: '900',
+    textAlign: 'center',
+    marginBottom: 12,
+    letterSpacing: 0.5,
+    textShadowColor: '#000000',
+    textShadowOffset: {
+      width: 2,
+      height: 2,
+    },
+    textShadowRadius: 2,
+  },
+
+  completeStats: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 10,
+    marginBottom: 12,
+  },
+
+  completeStat: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+
+  completeNumber: {
+    color: ORANGE,
+    fontSize: 25,
+    fontWeight: '900',
+  },
+
+  completeLabel: {
+    color: GREY,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+    marginTop: 2,
+  },
+
+  saveButton: {
+    backgroundColor: ORANGE,
+    borderRadius: 12,
+    paddingVertical: 16,
+    shadowColor: '#000000',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.45,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+
+  saveButtonPressed: {
+    opacity: 0.78,
+    transform: [{ scale: 0.98 }],
+  },
+
+  saveText: {
+    color: WHITE,
     fontSize: 18,
     fontWeight: '900',
     textAlign: 'center',
@@ -1121,14 +1330,163 @@ const styles = StyleSheet.create({
     textShadowRadius: 2,
   },
 
-  resetConfirmText: {
-    color: '#AAAAAA',
+  lastRunBox: {
+    width: '100%',
+    minHeight: 68,
+    backgroundColor: CARD,
+    borderWidth: 2,
+    borderColor: 'rgba(255,140,0,0.75)',
+    borderRadius: 14,
+    paddingHorizontal: 13,
+    marginBottom: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    shadowColor: '#000000',
+    shadowOffset: {
+      width: 0,
+      height: 3,
+    },
+    shadowOpacity: 0.35,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+
+  lastRunLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+
+  runBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: ORANGE,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+
+  runBadgeText: {
+    color: WHITE,
+    fontSize: 17,
+    fontWeight: '900',
+    textShadowColor: '#000000',
+    textShadowOffset: {
+      width: 1,
+      height: 1,
+    },
+    textShadowRadius: 1,
+  },
+
+  lastRunNumber: {
+    color: GREY,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+
+  lastRunTime: {
+    color: WHITE,
+    fontSize: 17,
+    fontWeight: '900',
+    marginTop: 1,
+  },
+
+  lastRunDistance: {
+    color: ORANGE,
+    fontSize: 20,
+    fontWeight: '900',
+    textAlign: 'right',
+    textShadowColor: '#000000',
+    textShadowOffset: {
+      width: 2,
+      height: 2,
+    },
+    textShadowRadius: 2,
+  },
+
+  emptyBox: {
+    width: '100%',
+    minHeight: 62,
+    backgroundColor: CARD,
+    borderWidth: 2,
+    borderColor: 'rgba(255,140,0,0.75)',
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  emptyText: {
+    color: '#777777',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1,
+    textAlign: 'center',
+  },
+
+  resetButton: {
+    width: '100%',
+    backgroundColor: RED,
+    borderRadius: 10,
+    minHeight: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+    shadowColor: '#000000',
+    shadowOffset: {
+      width: 0,
+      height: 3,
+    },
+    shadowOpacity: 0.45,
+    shadowRadius: 3,
+    elevation: 4,
+  },
+
+  resetButtonPressed: {
+    opacity: 0.75,
+    transform: [{ scale: 0.98 }],
+  },
+
+  resetText: {
+    color: WHITE,
+    fontSize: 14,
+    fontWeight: '900',
+    letterSpacing: 1,
+    textShadowColor: '#000000',
+    textShadowOffset: {
+      width: 2,
+      height: 2,
+    },
+    textShadowRadius: 2,
+  },
+
+  resetConfirmBox: {
+    width: '100%',
+    backgroundColor: CARD,
+    borderWidth: 2,
+    borderColor: RED,
+    borderRadius: 14,
+    padding: 15,
+    marginBottom: 10,
+  },
+
+  resetConfirmTitle: {
+    color: WHITE,
+    fontSize: 18,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+
+  resetConfirmDescription: {
+    color: GREY,
     fontSize: 12,
     lineHeight: 18,
     fontWeight: '700',
     textAlign: 'center',
     marginTop: 8,
-    marginBottom: 14,
+    marginBottom: 13,
   },
 
   resetConfirmButtons: {
@@ -1140,13 +1498,13 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#333333',
     borderRadius: 10,
-    minHeight: 44,
+    minHeight: 43,
     alignItems: 'center',
     justifyContent: 'center',
   },
 
   cancelResetText: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontSize: 13,
     fontWeight: '900',
     letterSpacing: 0.8,
@@ -1154,15 +1512,15 @@ const styles = StyleSheet.create({
 
   confirmResetButton: {
     flex: 1,
-    backgroundColor: '#EF4444',
+    backgroundColor: RED,
     borderRadius: 10,
-    minHeight: 44,
+    minHeight: 43,
     alignItems: 'center',
     justifyContent: 'center',
   },
 
   confirmResetText: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontSize: 13,
     fontWeight: '900',
     letterSpacing: 0.8,
@@ -1177,33 +1535,24 @@ const styles = StyleSheet.create({
   stats: {
     flexDirection: 'row',
     width: '100%',
-    gap: 10,
-    marginTop: 0,
+    gap: 9,
   },
 
   stat: {
     flex: 1,
-    backgroundColor: cardColor,
+    backgroundColor: CARD,
     borderWidth: 2,
     borderColor: 'rgba(255,140,0,0.75)',
     borderRadius: 14,
-    paddingVertical: 14,
-    paddingHorizontal: 4,
+    paddingVertical: 13,
+    paddingHorizontal: 3,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-    shadowOpacity: 0.35,
-    shadowRadius: 3,
-    elevation: 3,
   },
 
   number: {
-    color: '#FF8C00',
-    fontSize: 22,
+    color: ORANGE,
+    fontSize: 21,
     fontWeight: '900',
     textAlign: 'center',
     textShadowColor: '#000000',
@@ -1215,34 +1564,26 @@ const styles = StyleSheet.create({
   },
 
   label: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontSize: 9,
     fontWeight: '900',
-    letterSpacing: 0.6,
+    letterSpacing: 0.5,
     marginTop: 3,
     textAlign: 'center',
   },
 
   pbBox: {
     width: '100%',
-    minHeight: 78,
-    backgroundColor: cardColor,
+    minHeight: 74,
+    backgroundColor: CARD,
     borderWidth: 2,
     borderColor: 'rgba(255,140,0,0.75)',
     borderRadius: 14,
-    paddingHorizontal: 15,
-    marginTop: 10,
+    paddingHorizontal: 13,
+    marginTop: 9,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-    shadowOpacity: 0.35,
-    shadowRadius: 3,
-    elevation: 3,
   },
 
   pbLeft: {
@@ -1252,319 +1593,30 @@ const styles = StyleSheet.create({
   },
 
   trophy: {
-    fontSize: 25,
-    marginRight: 10,
+    fontSize: 24,
+    marginRight: 9,
   },
 
   pbSmall: {
-    color: '#AAAAAA',
-    fontSize: 10,
+    color: GREY,
+    fontSize: 9,
     fontWeight: '900',
     letterSpacing: 1,
-    marginBottom: 3,
+    marginBottom: 2,
   },
 
   pbTitle: {
-    color: '#FFFFFF',
-    fontSize: 14,
+    color: WHITE,
+    fontSize: 13,
     fontWeight: '900',
-    letterSpacing: 0.4,
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 1,
-      height: 1,
-    },
-    textShadowRadius: 1,
+    letterSpacing: 0.3,
   },
 
   pbValue: {
-    color: '#FF8C00',
-    fontSize: 22,
+    color: ORANGE,
+    fontSize: 21,
     fontWeight: '900',
     textAlign: 'right',
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  emptyBox: {
-    width: '100%',
-    minHeight: 65,
-    backgroundColor: cardColor,
-    borderWidth: 2,
-    borderColor: 'rgba(255,140,0,0.75)',
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-    shadowOpacity: 0.35,
-    shadowRadius: 3,
-    elevation: 3,
-  },
-
-  emptyText: {
-    color: '#777777',
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 1,
-  },
-
-  lastRunBox: {
-    width: '100%',
-    minHeight: 65,
-    backgroundColor: cardColor,
-    borderWidth: 2,
-    borderColor: 'rgba(255,140,0,0.75)',
-    borderRadius: 14,
-    paddingHorizontal: 15,
-    marginBottom: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-    shadowOpacity: 0.35,
-    shadowRadius: 3,
-    elevation: 3,
-  },
-
-  lastRunNumber: {
-    color: '#AAAAAA',
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 1,
-  },
-
-  lastRunTime: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '900',
-    marginTop: 2,
-  },
-
-  lastRunDistance: {
-    color: '#FF8C00',
-    fontSize: 20,
-    fontWeight: '900',
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  gpsBox: {
-    width: '100%',
-    backgroundColor: cardColor,
-    borderWidth: 2,
-    borderColor: 'rgba(255,140,0,0.75)',
-    borderRadius: 16,
-    alignItems: 'center',
-    paddingVertical: 14,
-    marginTop: 12,
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-    shadowOpacity: 0.35,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-
-  gpsTitle: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 1.2,
-  },
-
-  gpsValue: {
-    color: '#FF8C00',
-    fontSize: 32,
-    fontWeight: '900',
-    marginTop: 3,
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  gpsStatus: {
-    color: '#AAAAAA',
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 1,
-    marginTop: 3,
-  },
-
-  gpsDistance: {
-    color: '#FF8C00',
-    fontSize: 28,
-    fontWeight: '900',
-    textAlign: 'center',
-    marginBottom: 15,
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  timerBox: {
-    width: '100%',
-    backgroundColor: cardColor,
-    borderWidth: 2,
-    borderColor: 'rgba(255,140,0,0.75)',
-    borderRadius: 16,
-    alignItems: 'center',
-    paddingVertical: 20,
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-    shadowOpacity: 0.35,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-
-  timer: {
-    color: '#FF8C00',
-    fontSize: 55,
-    fontWeight: '900',
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  startButton: {
-    width: '100%',
-    backgroundColor: '#FF8C00',
-    borderRadius: 14,
-    paddingVertical: 17,
-    marginTop: 12,
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 5,
-    },
-    shadowOpacity: 0.5,
-    shadowRadius: 5,
-    elevation: 7,
-  },
-
-  startText: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '900',
-    textAlign: 'center',
-    letterSpacing: 0.8,
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  endButton: {
-    width: '100%',
-    backgroundColor: '#EF4444',
-    borderRadius: 14,
-    paddingVertical: 17,
-    marginTop: 12,
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 5,
-    },
-    shadowOpacity: 0.5,
-    shadowRadius: 5,
-    elevation: 7,
-  },
-
-  endText: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '900',
-    textAlign: 'center',
-    letterSpacing: 0.8,
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  saveBox: {
-    width: '100%',
-    backgroundColor: cardColor,
-    borderWidth: 2,
-    borderColor: 'rgba(255,140,0,0.75)',
-    borderRadius: 14,
-    padding: 16,
-    marginTop: 12,
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-    shadowOpacity: 0.35,
-    shadowRadius: 3,
-    elevation: 3,
-  },
-
-  saveTitle: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '900',
-    textAlign: 'center',
-    marginBottom: 10,
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  saveTime: {
-    color: '#AAAAAA',
-    fontSize: 14,
-    textAlign: 'center',
-    marginBottom: 15,
-  },
-
-  saveButton: {
-    backgroundColor: '#FF8C00',
-    borderRadius: 12,
-    paddingVertical: 16,
-  },
-
-  saveText: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '900',
-    textAlign: 'center',
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -1587,9 +1639,9 @@ const styles = StyleSheet.create({
     maxWidth: 700,
     minHeight: 75,
     alignSelf: 'center',
-    backgroundColor: '#111111',
+    backgroundColor: BLACK,
     borderTopWidth: 2,
-    borderTopColor: '#FF8C00',
+    borderTopColor: ORANGE,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
@@ -1604,7 +1656,7 @@ const styles = StyleSheet.create({
   },
 
   navIcon: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontSize: 22,
     marginBottom: 3,
     textShadowColor: '#000000',
@@ -1616,7 +1668,7 @@ const styles = StyleSheet.create({
   },
 
   navText: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontSize: 8,
     fontWeight: '800',
     textAlign: 'center',
