@@ -12,32 +12,40 @@ import React from 'react';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { VideoView, useVideoPlayer } from 'expo-video';
 
 const backgroundImage = require('../../assets/images/HD-Running-Background.jpg');
-const headerImage = {
-  uri: 'https://i.postimg.cc/j26gVHnL/headerimage.gif',
-};
+const headerVideo = require('../../assets/images/rclelogo.mp4');
 
 export default function HomeScreen() {
   const router = useRouter();
 
   const pulse = React.useRef(new Animated.Value(1)).current;
 
+  const headerPlayer = useVideoPlayer(headerVideo, (player) => {
+    player.loop = true;
+    player.muted = true;
+  });
+
+  React.useEffect(() => {
+    headerPlayer.play();
+  }, [headerPlayer]);
+
   React.useEffect(() => {
     Animated.loop(
-  Animated.sequence([
-    Animated.timing(pulse, {
-      toValue: 1.05,
-      duration: 400,
-      useNativeDriver: true,
-    }),
-    Animated.timing(pulse, {
-      toValue: 1,
-      duration: 400,
-      useNativeDriver: true,
-    }),
-  ])
-).start();
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1.05,
+          duration: 400,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 400,
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
   }, [pulse]);
 
   function openLink(url: string) {
@@ -48,6 +56,8 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+
+      {/* BACKGROUND + SCROLLING CONTENT */}
       <View style={styles.background}>
 
         <Image
@@ -59,21 +69,20 @@ export default function HomeScreen() {
         <View style={styles.darkOverlay} />
 
         <ScrollView
+          style={styles.scrollView}
           contentContainerStyle={styles.container}
           showsVerticalScrollIndicator={false}
         >
 
-          {/* ORIGINAL HEADER */}
-
           <View style={styles.headerFrame}>
-            <Image
-              source={headerImage}
+            <VideoView
+              player={headerPlayer}
               style={styles.headerImage}
-              resizeMode="contain"
+              contentFit="contain"
+              nativeControls={false}
+              playsInline
             />
           </View>
-
-          {/* HERO */}
 
           <View style={styles.hero}>
             <Text style={styles.heroLine}>
@@ -89,16 +98,13 @@ export default function HomeScreen() {
             </Text>
           </View>
 
-          {/* INTRO */}
-
           <View style={styles.introBox}>
             <Text style={styles.intro}>
               NO PACE,NO PRESSURE, NO EXPERIENCE,NO PROBLEM
-ANY AGE, JUST YOU, YOUR TIME AND THE WANT TO TRY.
+              {'\n'}
+              ANY AGE, JUST YOU, YOUR TIME AND THE WANT TO TRY.
             </Text>
           </View>
-
-          {/* START BUTTON */}
 
           <Animated.View
             style={[
@@ -115,30 +121,53 @@ ANY AGE, JUST YOU, YOUR TIME AND THE WANT TO TRY.
                 pressed && styles.startButtonPressed,
               ]}
             >
-<View
-  style={{
-    position: 'absolute',
-    top: 4,
-    left: 25,
-    right: 25,
-    height: 12,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.35)',
-  }}
-/>
+              <View
+                style={{
+                  position: 'absolute',
+                  top: 4,
+                  left: 25,
+                  right: 25,
+                  height: 12,
+                  borderRadius: 12,
+                  backgroundColor: 'rgba(255,255,255,0.35)',
+                }}
+              />
+
               <Image
-  source={require('../../assets/images/test.png.png')}
-  style={styles.startLogo}
-  resizeMode="contain"
-/>
+                source={require('../../assets/images/test.png.png')}
+                style={styles.startLogo}
+                resizeMode="contain"
+              />
+
               <Text style={styles.startText}>
                 START YOUR PROGRAM
               </Text>
-
             </Pressable>
           </Animated.View>
 
-          {/* PROGRAM INFORMATION */}
+          <Pressable
+            onPress={() => router.push('/leaderboard')}
+            style={({ pressed }) => [
+              styles.leaderboardButton,
+              pressed && styles.leaderboardButtonPressed,
+            ]}
+          >
+            <Ionicons
+              name="trophy"
+              size={25}
+              color="#FF8C00"
+            />
+
+            <Text style={styles.leaderboardButtonText}>
+              VIEW LEADERBOARD
+            </Text>
+
+            <Ionicons
+              name="chevron-forward"
+              size={24}
+              color="#FFFFFF"
+            />
+          </Pressable>
 
           <View style={styles.infoRow}>
 
@@ -178,8 +207,6 @@ ANY AGE, JUST YOU, YOUR TIME AND THE WANT TO TRY.
             START WHERE YOU ARE. BUILD FROM THERE.
           </Text>
 
-          {/* COMMUNITY */}
-
           <View style={styles.communitySection}>
 
             <Text style={styles.communityTitle}>
@@ -187,8 +214,6 @@ ANY AGE, JUST YOU, YOUR TIME AND THE WANT TO TRY.
             </Text>
 
             <View style={styles.communityRow}>
-
-              {/* YOUTUBE */}
 
               <Pressable
                 style={styles.communityBox}
@@ -209,8 +234,6 @@ ANY AGE, JUST YOU, YOUR TIME AND THE WANT TO TRY.
                 </Text>
               </Pressable>
 
-              {/* FACEBOOK */}
-
               <Pressable
                 style={styles.communityBox}
                 onPress={() =>
@@ -229,8 +252,6 @@ ANY AGE, JUST YOU, YOUR TIME AND THE WANT TO TRY.
                   FACEBOOK
                 </Text>
               </Pressable>
-
-              {/* WEBSITE */}
 
               <Pressable
                 style={styles.communityBox}
@@ -256,78 +277,91 @@ ANY AGE, JUST YOU, YOUR TIME AND THE WANT TO TRY.
 
         </ScrollView>
 
-        {/* BOTTOM NAVIGATION */}
+      </View>
 
-        <View style={styles.bottomNav}>
+      {/* BOTTOM NAV — OUTSIDE THE SCROLLVIEW, SAME AS COMMUNITY */}
+      <View style={styles.bottomNav}>
 
-          <Pressable
-            style={styles.navItem}
-            onPress={() => router.push('/')}
-          >
-            <Text style={styles.navIcon}>
-              ⌂
-            </Text>
+        <Pressable
+          style={styles.navItem}
+          onPress={() => router.push('/')}
+        >
+          <Text style={styles.navIcon}>
+            ⌂
+          </Text>
 
-            <Text style={styles.navText}>
-              HOME
-            </Text>
-          </Pressable>
+          <Text style={styles.navText}>
+            HOME
+          </Text>
+        </Pressable>
 
-          <Pressable
-            style={styles.navItem}
-            onPress={() => router.push('/weeks')}
-          >
-            <Text style={styles.navIcon}>
-              ▶
-            </Text>
+        <Pressable
+          style={styles.navItem}
+          onPress={() => router.push('/weeks')}
+        >
+          <Text style={styles.navIcon}>
+            ▶
+          </Text>
 
-            <Text style={styles.navText}>
-              PROGRAMME
-            </Text>
-          </Pressable>
+          <Text style={styles.navText}>
+            PROGRAMME
+          </Text>
+        </Pressable>
 
-          <Pressable
-            style={styles.navItem}
-            onPress={() => router.push('/progress')}
-          >
-            <Text style={styles.navIcon}>
-              ✓
-            </Text>
+        <Pressable
+          style={styles.navItem}
+          onPress={() => router.push('/progress')}
+        >
+          <Text style={styles.navIcon}>
+            ✓
+          </Text>
 
-            <Text style={styles.navText}>
-              PROGRESS
-            </Text>
-          </Pressable>
+          <Text style={styles.navText}>
+            PROGRESS
+          </Text>
+        </Pressable>
 
-          <Pressable
-            style={styles.navItem}
-            onPress={() => router.push('/free-run')}
-          >
-            <Text style={styles.navIcon}>
-              🏃
-            </Text>
+        <Pressable
+          style={styles.navItem}
+          onPress={() => router.push('/leaderboard')}
+        >
+          <Text style={styles.navIcon}>
+            🏆
+          </Text>
 
-            <Text style={styles.navText}>
-              FREE RUN
-            </Text>
-          </Pressable>
+          <Text style={styles.navText}>
+            LEADERBOARD
+          </Text>
+        </Pressable>
 
-          <Pressable
-            style={styles.navItem}
-            onPress={() => router.push('/community')}
-          >
-            <Text style={styles.navIcon}>
-              👥
-            </Text>
+        <Pressable
+          style={styles.navItem}
+          onPress={() => router.push('/free-run')}
+        >
+          <Text style={styles.navIcon}>
+            🏃
+          </Text>
 
-            <Text style={styles.navText}>
-              COMMUNITY
-            </Text>
-          </Pressable>
+          <Text style={styles.navText}>
+            FREE RUN
+          </Text>
+        </Pressable>
 
-        </View>
+        <Pressable
+          style={styles.navItem}
+          onPress={() => router.push('/community')}
+        >
+          <Text style={styles.navIcon}>
+            👥
+          </Text>
+
+          <Text style={styles.navText}>
+            COMMUNITY
+          </Text>
+        </Pressable>
 
       </View>
+
     </SafeAreaView>
   );
 }
@@ -355,12 +389,16 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.58)',
   },
 
+  scrollView: {
+    flex: 1,
+  },
+
   container: {
     flexGrow: 1,
     alignItems: 'center',
     paddingHorizontal: 20,
     paddingTop: 18,
-    paddingBottom: 45,
+    paddingBottom: 35,
     width: '100%',
     maxWidth: 850,
     alignSelf: 'center',
@@ -392,7 +430,6 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,140,0,0.75)',
     borderRadius: 18,
     backgroundColor: 'rgba(0,0,0,0.48)',
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -409,7 +446,6 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     textAlign: 'center',
     letterSpacing: 1,
-
     textShadowColor: 'rgba(0,0,0,0.8)',
     textShadowOffset: {
       width: 2,
@@ -425,7 +461,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     letterSpacing: -1,
     marginVertical: 3,
-
     textShadowColor: 'rgba(0,0,0,0.8)',
     textShadowOffset: {
       width: 2,
@@ -444,7 +479,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 16,
     marginBottom: 22,
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -460,7 +494,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 24,
     textAlign: 'center',
-
     textShadowColor: 'rgba(0,0,0,0.7)',
     textShadowOffset: {
       width: 1,
@@ -472,24 +505,20 @@ const styles = StyleSheet.create({
   startButtonWrapper: {
     width: '100%',
     maxWidth: 650,
-    marginBottom: 25,
+    marginBottom: 15,
   },
 
   startButton: {
     width: '100%',
     minHeight: 90,
     borderRadius: 14,
-
     backgroundColor: '#FF8C00',
-
     borderWidth: 2,
     borderColor: 'rgba(255,140,0,0.75)',
-
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
     paddingHorizontal: 20,
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -512,18 +541,61 @@ const styles = StyleSheet.create({
   },
 
   startText: {
-  color: '#f8f8f8',
-  fontSize: 18,
-  fontWeight: '900',
-  letterSpacing: 0.8,
-
-  textShadowColor: 'rgba(0,0,0,0.8)',
-  textShadowOffset: {
-    width: 2,
-    height: 2,
+    color: '#f8f8f8',
+    fontSize: 18,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+    textShadowColor: 'rgba(0,0,0,0.8)',
+    textShadowOffset: {
+      width: 2,
+      height: 2,
+    },
+    textShadowRadius: 4,
   },
-  textShadowRadius: 4,
-},
+
+  leaderboardButton: {
+    width: '100%',
+    maxWidth: 650,
+    minHeight: 62,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.78)',
+    borderWidth: 2,
+    borderColor: 'rgba(255,140,0,0.75)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    paddingHorizontal: 18,
+    marginBottom: 25,
+    shadowColor: '#000000',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.45,
+    shadowRadius: 5,
+    elevation: 5,
+  },
+
+  leaderboardButtonPressed: {
+    transform: [{ scale: 0.97 }],
+    opacity: 0.9,
+  },
+
+  leaderboardButtonText: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '900',
+    letterSpacing: 1,
+    textAlign: 'center',
+    marginHorizontal: 10,
+    textShadowColor: '#000000',
+    textShadowOffset: {
+      width: 2,
+      height: 2,
+    },
+    textShadowRadius: 3,
+  },
 
   infoRow: {
     flexDirection: 'row',
@@ -540,7 +612,6 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingVertical: 16,
     alignItems: 'center',
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -555,7 +626,6 @@ const styles = StyleSheet.create({
     color: '#FF8C00',
     fontSize: 30,
     fontWeight: '900',
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -570,7 +640,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1,
     marginTop: 3,
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 1,
@@ -587,7 +656,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 28,
     opacity: 0.8,
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 1,
@@ -610,7 +678,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 12,
     letterSpacing: 1,
-
     textShadowColor: 'rgba(0,0,0,0.8)',
     textShadowOffset: {
       width: 2,
@@ -633,7 +700,6 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -649,7 +715,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '800',
     marginTop: 4,
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 1,
@@ -660,7 +725,7 @@ const styles = StyleSheet.create({
 
   bottomNav: {
     width: '100%',
-    maxWidth: 650,
+    maxWidth: 700,
     minHeight: 75,
     alignSelf: 'center',
     backgroundColor: '#111111',
@@ -681,9 +746,8 @@ const styles = StyleSheet.create({
 
   navIcon: {
     color: '#FFFFFF',
-    fontSize: 22,
+    fontSize: 20,
     marginBottom: 3,
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -694,10 +758,9 @@ const styles = StyleSheet.create({
 
   navText: {
     color: '#FFFFFF',
-    fontSize: 8,
+    fontSize: 7,
     fontWeight: '800',
     textAlign: 'center',
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 1,

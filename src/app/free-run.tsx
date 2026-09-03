@@ -1,13 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import * as Location from 'expo-location';
 import {
   Alert,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -26,7 +26,6 @@ export default function FreeRunScreen() {
   const [seconds, setSeconds] = useState(0);
   const [running, setRunning] = useState(false);
   const [finished, setFinished] = useState(false);
-  const [distance, setDistance] = useState('');
 
   const [totalKm, setTotalKm] = useState(0);
   const [totalRuns, setTotalRuns] = useState(0);
@@ -44,7 +43,17 @@ export default function FreeRunScreen() {
 
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
+  const [gpsDistance, setGpsDistance] = useState(0);
+  const [gpsStatus, setGpsStatus] = useState('GPS OFF');
+
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const locationSubscription =
+    useRef<Location.LocationSubscription | null>(null);
+
+  const lastLocation = useRef<Location.LocationObject | null>(null);
+
+  const gpsDistanceRef = useRef(0);
 
   useFocusEffect(
     useCallback(() => {
@@ -52,8 +61,217 @@ export default function FreeRunScreen() {
     }, [])
   );
 
+  const stopGps = () => {
+    if (locationSubscription.current) {
+      locationSubscription.current.remove();
+      locationSubscription.current = null;
+    }
+
+    lastLocation.current = null;
+  };
+
+  const calculateDistanceKm = (
+    lat1: number,
+    lon1: number,
+    lat2: number,
+    lon2: number
+  ) => {
+    const toRadians = (value: number) =>
+      (value * Math.PI) / 180;
+
+    const earthRadiusKm = 6371;
+
+    const dLat = toRadians(lat2 - lat1);
+    const dLon = toRadians(lon2 - lon1);
+
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRadians(lat1)) *
+        Math.cos(toRadians(lat2)) *
+        Math.sin(dLon / 2) ** 2;
+
+    const c =
+      2 *
+      Math.atan2(
+        Math.sqrt(a),
+        Math.sqrt(1 - a)
+      );
+
+    return earthRadiusKm * c;
+  };
+
+  const startGps = async () => {
+    try {
+      const { status } =
+        await Location.requestForegroundPermissionsAsync();
+
+      if (status !== 'granted') {
+        setGpsStatus('GPS DENIED');
+        return;
+      }
+
+      const servicesEnabled =
+        await Location.hasServicesEnabledAsync();
+
+      if (!servicesEnabled) {
+        setGpsStatus('GPS OFF');
+        Alert.alert(
+          'GPS IS OFF',
+          'Please turn on Location/GPS on your phone and start the run again.'
+        );
+        return;
+      }
+
+      setGpsStatus('GPS SEARCHING');
+
+      lastLocation.current = null;
+
+      /*
+       * Get an immediate location first.
+       * This prevents the app waiting indefinitely for
+       * watchPositionAsync to produce its first usable reading.
+       */
+      try {
+        const initialLocation =
+          await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.High,
+            mayShowUserSettingsDialog: true,
+          });
+
+        if (initialLocation?.coords) {
+          lastLocation.current = initialLocation;
+          setGpsStatus('GPS ACTIVE');
+        }
+      } catch (initialError) {
+        console.log(
+          'Initial GPS reading failed',
+          initialError
+        );
+      }
+
+      locationSubscription.current =
+        await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.BestForNavigation,
+            timeInterval: 1000,
+            distanceInterval: 1,
+            mayShowUserSettingsDialog: true,
+          },
+          (location) => {
+            if (!location || !location.coords) {
+              return;
+            }
+
+            const {
+              latitude,
+              longitude,
+              accuracy,
+            } = location.coords;
+
+            if (
+              !Number.isFinite(latitude) ||
+              !Number.isFinite(longitude)
+            ) {
+              return;
+            }
+
+            /*
+             * Do NOT use the old 50m rejection.
+             *
+             * Phone GPS can temporarily report 60-100m accuracy,
+             * especially when starting indoors or beside buildings.
+             * Those readings can still be useful for establishing
+             * the GPS position.
+             */
+            setGpsStatus(
+              accuracy != null && accuracy > 100
+                ? 'GPS SEARCHING'
+                : 'GPS ACTIVE'
+            );
+
+            if (!lastLocation.current) {
+              lastLocation.current = location;
+              return;
+            }
+
+            const previous =
+              lastLocation.current.coords;
+
+            const segmentKm =
+              calculateDistanceKm(
+                previous.latitude,
+                previous.longitude,
+                latitude,
+                longitude
+              );
+
+            /*
+             * Ignore tiny GPS jitter.
+             *
+             * 5 metres is enough to prevent stationary GPS drift
+             * being counted as running distance, while still allowing
+             * normal walking/running movement to accumulate.
+             */
+            if (segmentKm < 0.005) {
+              /*
+               * Keep the latest GPS point so that the next movement
+               * calculation is based on the newest position.
+               */
+              lastLocation.current = location;
+              return;
+            }
+
+            /*
+             * Ignore impossible jumps.
+             *
+             * 0.25km in one GPS update would mean 15km/h if updates
+             * arrive every minute, and considerably faster for our
+             * normal 1-second updates. This protects against GPS
+             * glitches without imposing the old 50m accuracy cutoff.
+             */
+            if (segmentKm > 0.25) {
+              console.log(
+                'Ignoring GPS jump:',
+                segmentKm,
+                'km'
+              );
+
+              /*
+               * Reset the reference point after a bad GPS jump so
+               * the next good reading can continue normally.
+               */
+              lastLocation.current = location;
+              return;
+            }
+
+            gpsDistanceRef.current += segmentKm;
+
+            setGpsDistance(
+              gpsDistanceRef.current
+            );
+
+            lastLocation.current = location;
+          }
+        );
+    } catch (error) {
+      console.log(
+        'Free Run GPS error',
+        error
+      );
+
+      setGpsStatus('GPS ERROR');
+
+      Alert.alert(
+        'GPS ERROR',
+        'The phone could not start GPS tracking. Please make sure Location is enabled and try again.'
+      );
+    }
+  };
+
   useEffect(() => {
     return () => {
+      stopGps();
+
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
@@ -81,7 +299,8 @@ export default function FreeRunScreen() {
 
   const loadStats = async () => {
     try {
-      const stored = await AsyncStorage.getItem(PROGRESS_KEY);
+      const stored =
+        await AsyncStorage.getItem(PROGRESS_KEY);
 
       if (!stored) {
         setTotalKm(0);
@@ -95,19 +314,22 @@ export default function FreeRunScreen() {
 
       const progress = JSON.parse(stored);
 
-      /*
-       * Free Run statistics.
-       */
       setTotalKm(Number(progress.freeRunKm || 0));
       setTotalRuns(Number(progress.freeRunRuns || 0));
-      setTotalSeconds(Number(progress.freeRunTotalSeconds || 0));
+      setTotalSeconds(
+        Number(progress.freeRunTotalSeconds || 0)
+      );
 
       setPersonalBestDistance(
-        Number(progress.freeRunPersonalBestDistance || 0)
+        Number(
+          progress.freeRunPersonalBestDistance || 0
+        )
       );
 
       setPersonalBestTime(
-        Number(progress.freeRunPersonalBestTime || 0)
+        Number(
+          progress.freeRunPersonalBestTime || 0
+        )
       );
 
       setLastRuns(
@@ -116,15 +338,25 @@ export default function FreeRunScreen() {
           : []
       );
     } catch (error) {
-      console.log('Could not load free run stats', error);
+      console.log(
+        'Could not load free run stats',
+        error
+      );
     }
   };
 
   const formatTime = (value: number) => {
-    const total = Math.max(0, Math.floor(value));
+    const total = Math.max(
+      0,
+      Math.floor(value)
+    );
 
     const hours = Math.floor(total / 3600);
-    const minutes = Math.floor((total % 3600) / 60);
+
+    const minutes = Math.floor(
+      (total % 3600) / 60
+    );
+
     const secs = total % 60;
 
     if (hours > 0) {
@@ -144,25 +376,36 @@ export default function FreeRunScreen() {
     );
   };
 
-  const startRun = () => {
+  const startRun = async () => {
     setSeconds(0);
     setFinished(false);
-    setDistance('');
+
+    setGpsDistance(0);
+    gpsDistanceRef.current = 0;
+    lastLocation.current = null;
+    setGpsStatus('GPS STARTING');
+
+    await startGps();
+
     setRunning(true);
   };
 
   const endRun = () => {
     setRunning(false);
+    stopGps();
+    setGpsStatus('GPS OFF');
     setFinished(true);
   };
 
   const saveRun = async () => {
-    const km = Number(distance);
+    const km = Number(
+      gpsDistance.toFixed(2)
+    );
 
     if (!Number.isFinite(km) || km <= 0) {
       Alert.alert(
-        'ENTER DISTANCE',
-        'Please enter the distance you ran.'
+        'NO GPS DISTANCE',
+        'No GPS running distance was recorded. Please make sure location is enabled and try again.'
       );
       return;
     }
@@ -176,43 +419,46 @@ export default function FreeRunScreen() {
     }
 
     try {
-      const stored = await AsyncStorage.getItem(PROGRESS_KEY);
-      const progress = stored ? JSON.parse(stored) : {};
+      const stored =
+        await AsyncStorage.getItem(PROGRESS_KEY);
 
-      /*
-       * EXISTING FREE RUN STATS
-       */
-      const oldKm = Number(progress.freeRunKm || 0);
-      const oldRuns = Number(progress.freeRunRuns || 0);
-      const oldTotalSeconds = Number(
-        progress.freeRunTotalSeconds || 0
-      );
+      const progress = stored
+        ? JSON.parse(stored)
+        : {};
 
-      const oldPBDistance = Number(
-        progress.freeRunPersonalBestDistance || 0
-      );
+      const oldKm =
+        Number(progress.freeRunKm || 0);
 
-      const oldPBTime = Number(
-        progress.freeRunPersonalBestTime || 0
-      );
+      const oldRuns =
+        Number(progress.freeRunRuns || 0);
 
-      const oldLastRuns = Array.isArray(
-        progress.freeRunLastRuns
-      )
-        ? progress.freeRunLastRuns
-        : [];
+      const oldTotalSeconds =
+        Number(
+          progress.freeRunTotalSeconds || 0
+        );
 
-      /*
-       * NEW FREE RUN TOTALS
-       */
+      const oldPBDistance =
+        Number(
+          progress.freeRunPersonalBestDistance ||
+            0
+        );
+
+      const oldPBTime =
+        Number(
+          progress.freeRunPersonalBestTime || 0
+        );
+
+      const oldLastRuns =
+        Array.isArray(progress.freeRunLastRuns)
+          ? progress.freeRunLastRuns
+          : [];
+
       const newKm = oldKm + km;
       const newRuns = oldRuns + 1;
+
       const newTotalSeconds =
         oldTotalSeconds + seconds;
 
-      /*
-       * PERSONAL BESTS
-       */
       const newPBDistance = Math.max(
         oldPBDistance,
         km
@@ -223,9 +469,6 @@ export default function FreeRunScreen() {
         seconds
       );
 
-      /*
-       * LAST 3 RUNS
-       */
       const newRun = {
         distance: km,
         seconds: seconds,
@@ -236,14 +479,10 @@ export default function FreeRunScreen() {
         ...oldLastRuns,
       ].slice(0, 3);
 
-      /*
-       * =====================================================
-       * SAVE FREE RUN DATA
-       * =====================================================
-       */
       progress.freeRunKm = newKm;
       progress.freeRunRuns = newRuns;
-      progress.freeRunTotalSeconds = newTotalSeconds;
+      progress.freeRunTotalSeconds =
+        newTotalSeconds;
 
       progress.freeRunPersonalBestDistance =
         newPBDistance;
@@ -254,42 +493,32 @@ export default function FreeRunScreen() {
       progress.freeRunLastRuns =
         newLastRuns;
 
-      /*
-       * =====================================================
-       * KEEP PROGRESS PAGE FREE RUN STATS IN SYNC
-       *
-       * Progress page uses:
-       *   extraRuns
-       *   extraKm
-       *
-       * Therefore these MUST also be updated here.
-       * =====================================================
-       */
       progress.extraRuns = newRuns;
       progress.extraKm = newKm;
 
-      /*
-       * Save everything together.
-       */
       await AsyncStorage.setItem(
         PROGRESS_KEY,
         JSON.stringify(progress)
       );
 
-      /*
-       * Update screen immediately.
-       */
       setTotalKm(newKm);
       setTotalRuns(newRuns);
       setTotalSeconds(newTotalSeconds);
 
-      setPersonalBestDistance(newPBDistance);
-      setPersonalBestTime(newPBTime);
+      setPersonalBestDistance(
+        newPBDistance
+      );
+
+      setPersonalBestTime(
+        newPBTime
+      );
 
       setLastRuns(newLastRuns);
 
       setFinished(false);
-      setDistance('');
+      setGpsDistance(0);
+      gpsDistanceRef.current = 0;
+      setGpsStatus('GPS OFF');
       setSeconds(0);
 
       Alert.alert(
@@ -298,7 +527,10 @@ export default function FreeRunScreen() {
           ' KM added to your Free Run stats.'
       );
     } catch (error) {
-      console.log('Could not save free run', error);
+      console.log(
+        'Could not save free run',
+        error
+      );
 
       Alert.alert(
         'ERROR',
@@ -307,26 +539,14 @@ export default function FreeRunScreen() {
     }
   };
 
-  /*
-   * =========================================================
-   * SHOW RESET CONFIRMATION
-   * =========================================================
-   */
   const resetStats = () => {
     setShowResetConfirm(true);
   };
 
-  /*
-   * =========================================================
-   * ACTUALLY RESET ALL FREE RUN DATA
-   * =========================================================
-   */
   const confirmResetStats = async () => {
     try {
-      /*
-       * Stop any active timer.
-       */
       setRunning(false);
+      stopGps();
 
       if (timerRef.current) {
         clearInterval(timerRef.current);
@@ -334,17 +554,14 @@ export default function FreeRunScreen() {
       }
 
       const stored =
-        await AsyncStorage.getItem(PROGRESS_KEY);
+        await AsyncStorage.getItem(
+          PROGRESS_KEY
+        );
 
       const progress = stored
         ? JSON.parse(stored)
         : {};
 
-      /*
-       * =====================================================
-       * REMOVE FREE RUN PAGE DATA
-       * =====================================================
-       */
       delete progress.freeRunKm;
       delete progress.freeRunRuns;
       delete progress.freeRunTotalSeconds;
@@ -352,42 +569,16 @@ export default function FreeRunScreen() {
       delete progress.freeRunPersonalBestTime;
       delete progress.freeRunLastRuns;
 
-      /*
-       * =====================================================
-       * IMPORTANT:
-       * REMOVE THE FREE RUN DATA USED BY PROGRESS PAGE TOO.
-       *
-       * ProgressScreen reads:
-       *   progress.extraRuns
-       *   progress.extraKm
-       *
-       * These were previously being left behind.
-       * =====================================================
-       */
       delete progress.extraRuns;
       delete progress.extraKm;
 
-      /*
-       * Remove old Free Run field from earlier versions.
-       */
       delete progress.longestFreeRun;
 
-      /*
-       * Save the remaining programme progress.
-       *
-       * Nothing relating to the actual programme weeks
-       * is removed.
-       */
       await AsyncStorage.setItem(
         PROGRESS_KEY,
         JSON.stringify(progress)
       );
 
-      /*
-       * =====================================================
-       * RESET FREE RUN SCREEN
-       * =====================================================
-       */
       setTotalKm(0);
       setTotalRuns(0);
       setTotalSeconds(0);
@@ -398,17 +589,13 @@ export default function FreeRunScreen() {
       setLastRuns([]);
 
       setFinished(false);
-      setDistance('');
+      setGpsDistance(0);
+      gpsDistanceRef.current = 0;
+      setGpsStatus('GPS OFF');
       setSeconds(0);
 
-      /*
-       * Close confirmation.
-       */
       setShowResetConfirm(false);
 
-      /*
-       * Confirm to user.
-       */
       Alert.alert(
         'RUN STATS RESET',
         'All Free Run statistics have been reset.'
@@ -448,15 +635,13 @@ export default function FreeRunScreen() {
           </Text>
         </View>
 
-        {/* RESET BUTTON */}
-
         <Pressable
           style={({ pressed }) => [
             styles.resetButton,
-            pressed && styles.resetButtonPressed,
+            pressed &&
+              styles.resetButtonPressed,
           ]}
           onPress={resetStats}
-          onPressIn={() => {}}
           hitSlop={8}
         >
           <Text style={styles.resetText}>
@@ -464,46 +649,57 @@ export default function FreeRunScreen() {
           </Text>
         </Pressable>
 
-        {/* RESET CONFIRMATION */}
-
         {showResetConfirm && (
           <View style={styles.resetConfirmBox}>
-            <Text style={styles.resetConfirmTitle}>
+            <Text
+              style={styles.resetConfirmTitle}
+            >
               RESET FREE RUN STATS?
             </Text>
 
-            <Text style={styles.resetConfirmText}>
-              This will clear your Free Run kilometres,
-              runs, total time, personal bests and last
-              3 runs. It will also clear the Free Run
+            <Text
+              style={styles.resetConfirmText}
+            >
+              This will clear your Free Run
+              kilometres, runs, total time,
+              personal bests and last 3 runs.
+              It will also clear the Free Run
               figures shown on the Progress page.
             </Text>
 
-            <View style={styles.resetConfirmButtons}>
+            <View
+              style={styles.resetConfirmButtons}
+            >
               <Pressable
-                style={styles.cancelResetButton}
+                style={
+                  styles.cancelResetButton
+                }
                 onPress={() =>
                   setShowResetConfirm(false)
                 }
               >
-                <Text style={styles.cancelResetText}>
+                <Text
+                  style={styles.cancelResetText}
+                >
                   CANCEL
                 </Text>
               </Pressable>
 
               <Pressable
-                style={styles.confirmResetButton}
+                style={
+                  styles.confirmResetButton
+                }
                 onPress={confirmResetStats}
               >
-                <Text style={styles.confirmResetText}>
+                <Text
+                  style={styles.confirmResetText}
+                >
                   RESET
                 </Text>
               </Pressable>
             </View>
           </View>
         )}
-
-        {/* TOP THREE STATS */}
 
         <View style={styles.stats}>
           <View style={styles.stat}>
@@ -537,8 +733,6 @@ export default function FreeRunScreen() {
           </View>
         </View>
 
-        {/* PERSONAL BEST DISTANCE */}
-
         <View style={styles.pbBox}>
           <View style={styles.pbLeft}>
             <Text style={styles.trophy}>
@@ -560,8 +754,6 @@ export default function FreeRunScreen() {
             {personalBestDistance.toFixed(2)} KM
           </Text>
         </View>
-
-        {/* PERSONAL BEST TIME */}
 
         <View style={styles.pbBox}>
           <View style={styles.pbLeft}>
@@ -585,8 +777,6 @@ export default function FreeRunScreen() {
           </Text>
         </View>
 
-        {/* LAST 3 RUNS */}
-
         <View style={styles.sectionHeading}>
           <Text style={styles.sectionHeadingText}>
             LAST 3 FREE RUNS
@@ -606,27 +796,45 @@ export default function FreeRunScreen() {
               style={styles.lastRunBox}
             >
               <View>
-                <Text style={styles.lastRunNumber}>
+                <Text
+                  style={styles.lastRunNumber}
+                >
                   RUN {index + 1}
                 </Text>
 
-                <Text style={styles.lastRunTime}>
+                <Text
+                  style={styles.lastRunTime}
+                >
                   {formatTime(run.seconds)}
                 </Text>
               </View>
 
-              <Text style={styles.lastRunDistance}>
+              <Text
+                style={styles.lastRunDistance}
+              >
                 {Number(run.distance).toFixed(2)} KM
               </Text>
             </View>
           ))
         )}
 
-        {/* TIMER */}
-
         <View style={styles.sectionHeading}>
           <Text style={styles.sectionHeadingText}>
             FREE RUN
+          </Text>
+        </View>
+
+        <View style={styles.gpsBox}>
+          <Text style={styles.gpsTitle}>
+            RUNNING DISTANCE
+          </Text>
+
+          <Text style={styles.gpsValue}>
+            {gpsDistance.toFixed(2)} KM
+          </Text>
+
+          <Text style={styles.gpsStatus}>
+            {gpsStatus}
           </Text>
         </View>
 
@@ -668,14 +876,9 @@ export default function FreeRunScreen() {
               Time: {formatTime(seconds)}
             </Text>
 
-            <TextInput
-              style={styles.input}
-              value={distance}
-              onChangeText={setDistance}
-              placeholder="Distance in KM"
-              placeholderTextColor="#666666"
-              keyboardType="decimal-pad"
-            />
+            <Text style={styles.gpsDistance}>
+              {gpsDistance.toFixed(2)} KM
+            </Text>
 
             <Pressable
               style={styles.saveButton}
@@ -693,14 +896,14 @@ export default function FreeRunScreen() {
         </Text>
       </ScrollView>
 
-      {/* BOTTOM NAVIGATION */}
-
       <View style={styles.bottomNav}>
         <Pressable
           style={styles.navItem}
           onPress={() => router.push('/')}
         >
-          <Text style={styles.navIcon}>⌂</Text>
+          <Text style={styles.navIcon}>
+            ⌂
+          </Text>
 
           <Text style={styles.navText}>
             HOME
@@ -709,9 +912,13 @@ export default function FreeRunScreen() {
 
         <Pressable
           style={styles.navItem}
-          onPress={() => router.push('/weeks')}
+          onPress={() =>
+            router.push('/weeks')
+          }
         >
-          <Text style={styles.navIcon}>▶</Text>
+          <Text style={styles.navIcon}>
+            ▶
+          </Text>
 
           <Text style={styles.navText}>
             PROGRAMME
@@ -720,9 +927,13 @@ export default function FreeRunScreen() {
 
         <Pressable
           style={styles.navItem}
-          onPress={() => router.push('/progress')}
+          onPress={() =>
+            router.push('/progress')
+          }
         >
-          <Text style={styles.navIcon}>✓</Text>
+          <Text style={styles.navIcon}>
+            ✓
+          </Text>
 
           <Text style={styles.navText}>
             PROGRESS
@@ -731,9 +942,13 @@ export default function FreeRunScreen() {
 
         <Pressable
           style={styles.navItem}
-          onPress={() => router.push('/free-run')}
+          onPress={() =>
+            router.push('/free-run')
+          }
         >
-          <Text style={styles.navIcon}>🏃</Text>
+          <Text style={styles.navIcon}>
+            🏃
+          </Text>
 
           <Text style={styles.navText}>
             FREE RUN
@@ -742,9 +957,13 @@ export default function FreeRunScreen() {
 
         <Pressable
           style={styles.navItem}
-          onPress={() => router.push('/community')}
+          onPress={() =>
+            router.push('/community')
+          }
         >
-          <Text style={styles.navIcon}>👥</Text>
+          <Text style={styles.navIcon}>
+            👥
+          </Text>
 
           <Text style={styles.navText}>
             COMMUNITY
@@ -808,7 +1027,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: 27,
     marginBottom: 12,
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -825,7 +1043,6 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 1.2,
     textAlign: 'center',
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -842,7 +1059,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 12,
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -851,7 +1067,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.45,
     shadowRadius: 3,
     elevation: 4,
-
     zIndex: 20,
   },
 
@@ -866,7 +1081,6 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 1,
     textAlign: 'center',
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -883,7 +1097,6 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 16,
     marginBottom: 12,
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -900,7 +1113,6 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     textAlign: 'center',
     letterSpacing: 0.8,
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -954,7 +1166,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '900',
     letterSpacing: 0.8,
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 1,
@@ -980,7 +1191,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     alignItems: 'center',
     justifyContent: 'center',
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -996,7 +1206,6 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: '900',
     textAlign: 'center',
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -1026,7 +1235,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -1061,7 +1269,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '900',
     letterSpacing: 0.4,
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 1,
@@ -1075,7 +1282,6 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: '900',
     textAlign: 'right',
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -1093,7 +1299,6 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -1123,7 +1328,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -1152,7 +1356,67 @@ const styles = StyleSheet.create({
     color: '#FF8C00',
     fontSize: 20,
     fontWeight: '900',
+    textShadowColor: '#000000',
+    textShadowOffset: {
+      width: 2,
+      height: 2,
+    },
+    textShadowRadius: 2,
+  },
 
+  gpsBox: {
+    width: '100%',
+    backgroundColor: cardColor,
+    borderWidth: 2,
+    borderColor: 'rgba(255,140,0,0.75)',
+    borderRadius: 16,
+    alignItems: 'center',
+    paddingVertical: 14,
+    marginTop: 12,
+    shadowColor: '#000000',
+    shadowOffset: {
+      width: 0,
+      height: 3,
+    },
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+
+  gpsTitle: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 1.2,
+  },
+
+  gpsValue: {
+    color: '#FF8C00',
+    fontSize: 32,
+    fontWeight: '900',
+    marginTop: 3,
+    textShadowColor: '#000000',
+    textShadowOffset: {
+      width: 2,
+      height: 2,
+    },
+    textShadowRadius: 2,
+  },
+
+  gpsStatus: {
+    color: '#AAAAAA',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1,
+    marginTop: 3,
+  },
+
+  gpsDistance: {
+    color: '#FF8C00',
+    fontSize: 28,
+    fontWeight: '900',
+    textAlign: 'center',
+    marginBottom: 15,
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -1169,7 +1433,6 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: 'center',
     paddingVertical: 20,
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -1184,7 +1447,6 @@ const styles = StyleSheet.create({
     color: '#FF8C00',
     fontSize: 55,
     fontWeight: '900',
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -1199,7 +1461,6 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingVertical: 17,
     marginTop: 12,
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -1216,7 +1477,6 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     textAlign: 'center',
     letterSpacing: 0.8,
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -1231,7 +1491,6 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingVertical: 17,
     marginTop: 12,
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -1248,7 +1507,6 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     textAlign: 'center',
     letterSpacing: 0.8,
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -1265,7 +1523,6 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 16,
     marginTop: 12,
-
     shadowColor: '#000000',
     shadowOffset: {
       width: 0,
@@ -1282,7 +1539,6 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     textAlign: 'center',
     marginBottom: 10,
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -1298,16 +1554,6 @@ const styles = StyleSheet.create({
     marginBottom: 15,
   },
 
-  input: {
-    backgroundColor: '#FFFFFF',
-    color: '#000000',
-    borderRadius: 12,
-    paddingHorizontal: 15,
-    paddingVertical: 14,
-    fontSize: 18,
-    marginBottom: 12,
-  },
-
   saveButton: {
     backgroundColor: '#FF8C00',
     borderRadius: 12,
@@ -1319,7 +1565,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '900',
     textAlign: 'center',
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -1362,7 +1607,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 22,
     marginBottom: 3,
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 2,
@@ -1376,7 +1620,6 @@ const styles = StyleSheet.create({
     fontSize: 8,
     fontWeight: '800',
     textAlign: 'center',
-
     textShadowColor: '#000000',
     textShadowOffset: {
       width: 1,

@@ -1,3 +1,4 @@
+
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -11,6 +12,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Speech from 'expo-speech';
 import { Audio } from 'expo-av';
+import * as Location from 'expo-location';
+import { supabase } from '../lib/supabase';
 
 const PROGRESS_KEY = 'zero_to_thirty_progress';
 
@@ -130,6 +133,46 @@ const WORKOUTS = {
   ],
 };
 
+type LocationPoint = {
+  latitude: number;
+  longitude: number;
+};
+
+function calculateDistanceKm(
+  first: LocationPoint,
+  second: LocationPoint
+) {
+  const earthRadiusKm = 6371;
+
+  const lat1 = (first.latitude * Math.PI) / 180;
+  const lat2 = (second.latitude * Math.PI) / 180;
+
+  const deltaLat =
+    ((second.latitude - first.latitude) * Math.PI) /
+    180;
+
+  const deltaLon =
+    ((second.longitude - first.longitude) * Math.PI) /
+    180;
+
+  const a =
+    Math.sin(deltaLat / 2) *
+      Math.sin(deltaLat / 2) +
+    Math.cos(lat1) *
+      Math.cos(lat2) *
+      Math.sin(deltaLon / 2) *
+      Math.sin(deltaLon / 2);
+
+  const c =
+    2 *
+    Math.atan2(
+      Math.sqrt(a),
+      Math.sqrt(1 - a)
+    );
+
+  return earthRadiusKm * c;
+}
+
 export default function RunScreen() {
   const router = useRouter();
   const { week, run } = useLocalSearchParams();
@@ -157,12 +200,61 @@ export default function RunScreen() {
   const [paused, setPaused] = useState(false);
   const [achievementStage, setAchievementStage] = useState(0);
 
-  const soundRef = useRef<Audio.Sound | null>(null);
+  const [distanceKm, setDistanceKm] = useState(0);
+  const [gpsStatus, setGpsStatus] =
+    useState('GPS WAITING');
+
+  const soundRef =
+    useRef<Audio.Sound | null>(null);
+
+  const locationSubscription =
+    useRef<Location.LocationSubscription | null>(
+      null
+    );
+
+  const lastLocation =
+    useRef<LocationPoint | null>(null);
+
+  const gpsDistance =
+    useRef(0);
+
+  const pausedRef =
+    useRef(false);
+
+  const completedRef =
+    useRef(false);
+
+  const currentIntervalRef =
+    useRef(0);
+
+  const finishingRef =
+    useRef(false);
 
   const current = workout[intervalIndex];
 
   const isFinalRun =
     weekNumber === 9 && runNumber === 3;
+
+  useEffect(() => {
+    pausedRef.current = paused;
+  }, [paused]);
+
+  useEffect(() => {
+    completedRef.current = completed;
+  }, [completed]);
+
+  useEffect(() => {
+    currentIntervalRef.current =
+      intervalIndex;
+
+    /*
+     * Reset the last GPS point whenever the
+     * workout changes from RUN to WALK or
+     * WALK to RUN. This prevents a GPS jump
+     * between intervals being counted.
+     */
+    lastLocation.current = null;
+  }, [intervalIndex]);
 
   async function stopCurrentAudio() {
     try {
@@ -172,7 +264,10 @@ export default function RunScreen() {
         soundRef.current = null;
       }
     } catch (error) {
-      console.log('Could not stop audio', error);
+      console.log(
+        'Could not stop audio',
+        error
+      );
       soundRef.current = null;
     }
   }
@@ -181,13 +276,17 @@ export default function RunScreen() {
     await stopCurrentAudio();
 
     try {
-      const { sound } = await Audio.Sound.createAsync(file);
+      const { sound } =
+        await Audio.Sound.createAsync(file);
 
       soundRef.current = sound;
 
       await sound.playAsync();
     } catch (error) {
-      console.log('Could not play audio', error);
+      console.log(
+        'Could not play audio',
+        error
+      );
     }
   }
 
@@ -342,11 +441,158 @@ export default function RunScreen() {
   }
 
   /*
+   * GPS TRACKING
+   *
+   * ONLY RUN intervals count towards distance.
+   */
+
+  async function stopGps() {
+    try {
+      if (locationSubscription.current) {
+        locationSubscription.current.remove();
+        locationSubscription.current = null;
+      }
+    } catch (error) {
+      console.log(
+        'Could not stop GPS',
+        error
+      );
+    }
+  }
+
+  async function startGps() {
+    try {
+      const permission =
+        await Location.requestForegroundPermissionsAsync();
+
+      if (permission.status !== 'granted') {
+        setGpsStatus('GPS DENIED');
+        return;
+      }
+
+      setGpsStatus('GPS ACTIVE');
+
+      await stopGps();
+
+      lastLocation.current = null;
+
+      locationSubscription.current =
+        await Location.watchPositionAsync(
+          {
+            accuracy:
+              Location.Accuracy.High,
+            timeInterval: 1000,
+            distanceInterval: 3,
+          },
+          (location) => {
+            if (
+              completedRef.current ||
+              pausedRef.current
+            ) {
+              return;
+            }
+
+            const interval =
+              workout[
+                currentIntervalRef.current
+              ];
+
+            /*
+             * Do NOT count warm-up,
+             * recovery walking or cool-down.
+             */
+            if (interval.type !== 'RUN') {
+              lastLocation.current = null;
+              return;
+            }
+
+            const accuracy =
+              location.coords.accuracy;
+
+            /*
+             * Ignore poor GPS fixes.
+             */
+            if (
+              accuracy !== null &&
+              accuracy > 50
+            ) {
+              return;
+            }
+
+            const point = {
+              latitude:
+                location.coords.latitude,
+              longitude:
+                location.coords.longitude,
+            };
+
+            if (!lastLocation.current) {
+              lastLocation.current = point;
+              return;
+            }
+
+            const segmentKm =
+              calculateDistanceKm(
+                lastLocation.current,
+                point
+              );
+
+            /*
+             * Ignore impossible GPS jumps.
+             * 200 metres between two updates is
+             * already more than enough tolerance.
+             */
+            if (
+              segmentKm > 0 &&
+              segmentKm <= 0.2
+            ) {
+              gpsDistance.current +=
+                segmentKm;
+
+              setDistanceKm(
+                gpsDistance.current
+              );
+            }
+
+            lastLocation.current = point;
+          },
+          (error) => {
+            console.log(
+              'GPS error',
+              error
+            );
+
+            setGpsStatus('GPS ERROR');
+          }
+        );
+    } catch (error) {
+      console.log(
+        'Could not start GPS',
+        error
+      );
+
+      setGpsStatus('GPS ERROR');
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      stopGps();
+      stopCurrentAudio();
+      Speech.stop();
+    };
+  }, []);
+
+  /*
    * INTERVAL START VOICES
    */
 
   useEffect(() => {
-    if (!started || paused || completed) {
+    if (
+      !started ||
+      paused ||
+      completed
+    ) {
       return;
     }
 
@@ -354,9 +600,13 @@ export default function RunScreen() {
 
     if (current.name === 'Warm-up') {
       playWarmupVoice();
-    } else if (current.name === 'Cool-down') {
+    } else if (
+      current.name === 'Cool-down'
+    ) {
       playCooldownVoice();
-    } else if (current.type === 'RUN') {
+    } else if (
+      current.type === 'RUN'
+    ) {
       playRunVoice();
     } else {
       playWalkVoice();
@@ -385,10 +635,6 @@ export default function RunScreen() {
 
   /*
    * MOTIVATIONAL VOICES
-   *
-   * IMPORTANT:
-   * No encouragement is allowed during
-   * the final 10 seconds of a run.
    */
 
   useEffect(() => {
@@ -402,15 +648,13 @@ export default function RunScreen() {
       return;
     }
 
-    /*
-     * The 10-second countdown always has priority.
-     */
     if (secondsLeft <= 10) {
       return;
     }
 
     const elapsed =
-      current.duration - secondsLeft;
+      current.duration -
+      secondsLeft;
 
     if (elapsed === 60) {
       playEncourage1();
@@ -453,7 +697,8 @@ export default function RunScreen() {
     }
 
     const elapsed =
-      current.duration - secondsLeft;
+      current.duration -
+      secondsLeft;
 
     if (elapsed === 30) {
       if (intervalIndex === 2) {
@@ -481,83 +726,8 @@ export default function RunScreen() {
   }, [secondsLeft]);
 
   /*
-   * MAIN TIMER
+   * SAVE COMPLETED RUN LOCALLY
    */
-
-  useEffect(() => {
-    if (completed || !started || paused) {
-      return;
-    }
-
-    const startTimeRef = {
-      current: Date.now(),
-    };
-
-    const intervalStartSeconds =
-      secondsLeft;
-
-    const timer = setInterval(() => {
-      const elapsedSeconds =
-        Math.floor(
-          (Date.now() -
-            startTimeRef.current) /
-            1000
-        );
-
-      const newSecondsLeft =
-        intervalStartSeconds -
-        elapsedSeconds;
-
-      if (newSecondsLeft > 0) {
-        setSecondsLeft(newSecondsLeft);
-        return;
-      }
-
-      clearInterval(timer);
-
-      if (
-        intervalIndex <
-        workout.length - 1
-      ) {
-        const nextIndex =
-          intervalIndex + 1;
-
-        setIntervalIndex(nextIndex);
-
-        setSecondsLeft(
-          workout[nextIndex].duration
-        );
-      } else {
-        setSecondsLeft(0);
-
-        saveCompletedRun();
-
-        setCompleted(true);
-
-        Speech.stop();
-
-        stopCurrentAudio();
-
-        if (isFinalRun) {
-          Speech.speak(
-            'Programme complete. Congratulations!'
-          );
-        } else {
-          Speech.speak(
-            `Run ${runNumber} complete. Well done.`
-          );
-        }
-      }
-    }, 250);
-
-    return () =>
-      clearInterval(timer);
-  }, [
-    intervalIndex,
-    completed,
-    started,
-    paused,
-  ]);
 
   async function saveCompletedRun() {
     try {
@@ -607,14 +777,211 @@ export default function RunScreen() {
     }
   }
 
+  /*
+   * SAVE RUN TO ZERO TO THIRTY
+   * SUPABASE LEADERBOARD
+   */
+
+  async function saveRunToLeaderboard(
+    km: number
+  ) {
+    try {
+      let {
+        data: {
+          user,
+        },
+      } = await supabase.auth.getUser();
+
+      /*
+       * Create the anonymous user if there
+       * isn't already a Supabase session.
+       */
+      if (!user) {
+        const { data, error } =
+          await supabase.auth.signInAnonymously();
+
+        if (error) {
+          throw error;
+        }
+
+        user = data.user;
+      }
+
+      if (!user) {
+        throw new Error(
+          'Could not create anonymous user'
+        );
+      }
+
+      const roundedKm =
+        Math.round(km * 100) / 100;
+
+      const { error } =
+        await supabase
+          .from('leaderboard_runs')
+          .upsert(
+            {
+              user_id: user.id,
+              runner_name:
+                'Zero to Thirty Runner',
+              km: roundedKm,
+              week_number:
+                Number(weekNumber),
+              run_number:
+                runNumber,
+            },
+            {
+              onConflict:
+                'user_id,week_number,run_number',
+            }
+          );
+
+      if (error) {
+        throw error;
+      }
+
+      console.log(
+        'Leaderboard run saved:',
+        roundedKm,
+        'km'
+      );
+    } catch (error) {
+      console.log(
+        'Could not save run to leaderboard',
+        error
+      );
+    }
+  }
+
+  /*
+   * COMPLETE THE RUN
+   */
+
+  async function finishRun() {
+    if (finishingRef.current) {
+      return;
+    }
+
+    finishingRef.current = true;
+
+    await stopGps();
+
+    Speech.stop();
+    await stopCurrentAudio();
+
+    const finalDistance =
+      Math.round(
+        gpsDistance.current * 100
+      ) / 100;
+
+    /*
+     * Local completion is saved first.
+     */
+    await saveCompletedRun();
+
+    /*
+     * Then the same RUN + KM is saved
+     * to the Zero to Thirty leaderboard.
+     */
+    await saveRunToLeaderboard(
+      finalDistance
+    );
+
+    setDistanceKm(finalDistance);
+    setCompleted(true);
+
+    if (isFinalRun) {
+      Speech.speak(
+        'Programme complete. Congratulations!'
+      );
+    } else {
+      Speech.speak(
+        `Run ${runNumber} complete. Well done.`
+      );
+    }
+  }
+
+  /*
+   * MAIN TIMER
+   */
+
+  useEffect(() => {
+    if (
+      completed ||
+      !started ||
+      paused
+    ) {
+      return;
+    }
+
+    const startTimeRef = {
+      current: Date.now(),
+    };
+
+    const intervalStartSeconds =
+      secondsLeft;
+
+    const timer = setInterval(() => {
+      const elapsedSeconds =
+        Math.floor(
+          (Date.now() -
+            startTimeRef.current) /
+            1000
+        );
+
+      const newSecondsLeft =
+        intervalStartSeconds -
+        elapsedSeconds;
+
+      if (newSecondsLeft > 0) {
+        setSecondsLeft(
+          newSecondsLeft
+        );
+        return;
+      }
+
+      clearInterval(timer);
+
+      if (
+        intervalIndex <
+        workout.length - 1
+      ) {
+        const nextIndex =
+          intervalIndex + 1;
+
+        setIntervalIndex(
+          nextIndex
+        );
+
+        setSecondsLeft(
+          workout[nextIndex].duration
+        );
+      } else {
+        setSecondsLeft(0);
+        finishRun();
+      }
+    }, 250);
+
+    return () =>
+      clearInterval(timer);
+  }, [
+    intervalIndex,
+    completed,
+    started,
+    paused,
+  ]);
+
   function backToJourney() {
     Speech.stop();
     stopCurrentAudio();
+    stopGps();
     router.back();
   }
 
   const minutes =
-    Math.floor(secondsLeft / 60);
+    Math.floor(
+      secondsLeft / 60
+    );
 
   const seconds =
     secondsLeft % 60;
@@ -627,12 +994,14 @@ export default function RunScreen() {
       .toString()
       .padStart(2, '0')}`;
 
+  const distanceText =
+    distanceKm.toFixed(2);
+
   /*
    * COMPLETION SCREENS
    */
 
   if (completed) {
-
     if (achievementStage === 1) {
       return (
         <SafeAreaView
@@ -643,7 +1012,6 @@ export default function RunScreen() {
               styles.achievementContainer
             }
           >
-
             <Text
               style={
                 styles.congratulationsTitle
@@ -710,7 +1078,6 @@ export default function RunScreen() {
                 BACK TO JOURNEY
               </Text>
             </Pressable>
-
           </View>
         </SafeAreaView>
       );
@@ -726,7 +1093,6 @@ export default function RunScreen() {
               styles.achievementContainer
             }
           >
-
             <Text
               style={
                 styles.programmeCompleteTitle
@@ -781,7 +1147,6 @@ export default function RunScreen() {
                 CLAIM YOUR ACHIEVEMENT
               </Text>
             </Pressable>
-
           </View>
         </SafeAreaView>
       );
@@ -796,7 +1161,6 @@ export default function RunScreen() {
             styles.achievementContainer
           }
         >
-
           <Text
             style={
               styles.runCompleteTitle
@@ -829,6 +1193,18 @@ export default function RunScreen() {
             WEEK {weekNumber} • RUN {runNumber}
           </Text>
 
+          <Text
+            style={styles.completedDistance}
+          >
+            {distanceText} KM
+          </Text>
+
+          <Text
+            style={styles.distanceSaved}
+          >
+            ADDED TO LEADERBOARD
+          </Text>
+
           <Pressable
             style={styles.backButton}
             onPress={
@@ -843,7 +1219,6 @@ export default function RunScreen() {
               BACK TO JOURNEY
             </Text>
           </Pressable>
-
         </View>
       </SafeAreaView>
     );
@@ -858,7 +1233,6 @@ export default function RunScreen() {
       style={styles.safeArea}
     >
       <View style={styles.container}>
-
         <Text style={styles.week}>
           WEEK {weekNumber} • RUN {runNumber}
         </Text>
@@ -887,16 +1261,60 @@ export default function RunScreen() {
             : current.type}
         </Text>
 
+        <View
+          style={styles.distancePanel}
+        >
+          <Text
+            style={
+              styles.distanceLabel
+            }
+          >
+            RUNNING DISTANCE
+          </Text>
+
+          <Text
+            style={
+              styles.distanceValue
+            }
+          >
+            {distanceText} KM
+          </Text>
+
+          <Text
+            style={
+              styles.gpsStatus
+            }
+          >
+            {gpsStatus}
+          </Text>
+        </View>
+
         <Pressable
           style={styles.startButton}
-          onPress={() => {
+          onPress={async () => {
             if (!started) {
               setStarted(true);
               setPaused(false);
+              await startGps();
             } else {
               setPaused(
-                (previous) =>
-                  !previous
+                (previous) => {
+                  const next =
+                    !previous;
+
+                  pausedRef.current =
+                    next;
+
+                  if (next) {
+                    lastLocation.current =
+                      null;
+                  } else {
+                    lastLocation.current =
+                      null;
+                  }
+
+                  return next;
+                }
               );
             }
           }}
@@ -919,6 +1337,7 @@ export default function RunScreen() {
           onPress={() => {
             Speech.stop();
             stopCurrentAudio();
+            stopGps();
             router.back();
           }}
         >
@@ -930,7 +1349,6 @@ export default function RunScreen() {
             QUIT RUN
           </Text>
         </Pressable>
-
       </View>
     </SafeAreaView>
   );
@@ -976,6 +1394,40 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 2,
     marginTop: 15,
+  },
+
+  distancePanel: {
+    width: '100%',
+    maxWidth: 500,
+    alignItems: 'center',
+    marginTop: 18,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: '#333333',
+    borderRadius: 14,
+    backgroundColor: '#181818',
+  },
+
+  distanceLabel: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 2,
+  },
+
+  distanceValue: {
+    color: '#FF8C00',
+    fontSize: 34,
+    fontWeight: '900',
+    marginTop: 3,
+  },
+
+  gpsStatus: {
+    color: '#AAAAAA',
+    fontSize: 12,
+    fontWeight: '800',
+    marginTop: 3,
+    letterSpacing: 1,
   },
 
   achievementContainer: {
@@ -1024,6 +1476,23 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     textAlign: 'center',
     marginTop: 8,
+    letterSpacing: 1,
+  },
+
+  completedDistance: {
+    color: '#FF8C00',
+    fontSize: 30,
+    fontWeight: '900',
+    textAlign: 'center',
+    marginTop: 12,
+  },
+
+  distanceSaved: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '900',
+    textAlign: 'center',
+    marginTop: 4,
     letterSpacing: 1,
   },
 

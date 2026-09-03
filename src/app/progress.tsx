@@ -238,6 +238,28 @@ export default function ProgressScreen() {
 
         </View>
 
+        {/* LEADERBOARD */}
+
+        <Pressable
+          onPress={() => router.push('/leaderboard')}
+          style={({ pressed }) => [
+            styles.leaderboardButton,
+            pressed && styles.leaderboardButtonPressed,
+          ]}
+        >
+
+          <View style={styles.buttonHighlight} />
+
+          <Text style={styles.leaderboardIcon}>
+            🏆
+          </Text>
+
+          <Text style={styles.leaderboardButtonText}>
+            VIEW LEADERBOARD
+          </Text>
+
+        </Pressable>
+
         {/* PERSONAL BESTS */}
 
         <View style={styles.sectionHeading}>
@@ -508,8 +530,6 @@ const styles = StyleSheet.create({
     textShadowRadius: 2,
   },
 
-  /* ORANGE ORIGINAL-APP STYLE HEADERS */
-
   sectionHeading: {
     width: '100%',
     backgroundColor: '#FF8C00',
@@ -632,6 +652,64 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     marginTop: 3,
     textAlign: 'center',
+  },
+
+  leaderboardButton: {
+    width: '100%',
+    minHeight: 62,
+    borderRadius: 14,
+    backgroundColor: '#FF8C00',
+    borderWidth: 2,
+    borderColor: 'rgba(255,140,0,0.75)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    marginTop: 15,
+    marginBottom: 5,
+
+    shadowColor: '#000000',
+    shadowOffset: {
+      width: 0,
+      height: 7,
+    },
+    shadowOpacity: 0.6,
+    shadowRadius: 9,
+    elevation: 12,
+  },
+
+  leaderboardButtonPressed: {
+    transform: [{ scale: 0.97 }],
+    opacity: 0.9,
+  },
+
+  buttonHighlight: {
+    position: 'absolute',
+    top: 4,
+    left: 25,
+    right: 25,
+    height: 12,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.35)',
+  },
+
+  leaderboardIcon: {
+    fontSize: 25,
+    marginRight: 10,
+  },
+
+  leaderboardButtonText: {
+    color: '#f8f8f8',
+    fontSize: 18,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+
+    textShadowColor: 'rgba(0,0,0,0.8)',
+    textShadowOffset: {
+      width: 2,
+      height: 2,
+    },
+    textShadowRadius: 4,
   },
 
   pbIntro: {
