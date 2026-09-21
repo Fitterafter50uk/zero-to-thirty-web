@@ -1,4 +1,3 @@
-
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -11,11 +10,21 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Speech from 'expo-speech';
-import { Audio } from 'expo-av';
+import {
+  createAudioPlayer,
+  setAudioModeAsync,
+  type AudioPlayer,
+} from 'expo-audio';
 import * as Location from 'expo-location';
-import { supabase } from '../lib/supabase';
+import { saveLeaderboardRun } from '../lib/leaderboard';
+import {
+  BACKGROUND_LOCATION_TASK,
+} from '../backgroundLocationTask';
 
 const PROGRESS_KEY = 'zero_to_thirty_progress';
+
+const GPS_STATE_KEY =
+  'zero_to_thirty_background_gps_state';
 
 const SUCCESS_GIF =
   'https://i.ibb.co/jvCcgCQF/SUCCESS2.gif';
@@ -133,47 +142,19 @@ const WORKOUTS = {
   ],
 };
 
-type LocationPoint = {
-  latitude: number;
-  longitude: number;
-};
-
-function calculateDistanceKm(
-  first: LocationPoint,
-  second: LocationPoint
-) {
-  const earthRadiusKm = 6371;
-
-  const lat1 = (first.latitude * Math.PI) / 180;
-  const lat2 = (second.latitude * Math.PI) / 180;
-
-  const deltaLat =
-    ((second.latitude - first.latitude) * Math.PI) /
-    180;
-
-  const deltaLon =
-    ((second.longitude - first.longitude) * Math.PI) /
-    180;
-
-  const a =
-    Math.sin(deltaLat / 2) *
-      Math.sin(deltaLat / 2) +
-    Math.cos(lat1) *
-      Math.cos(lat2) *
-      Math.sin(deltaLon / 2) *
-      Math.sin(deltaLon / 2);
-
-  const c =
-    2 *
-    Math.atan2(
-      Math.sqrt(a),
-      Math.sqrt(1 - a)
-    );
-
-  return earthRadiusKm * c;
-}
-
 export default function RunScreen() {
+  useEffect(() => {
+    setAudioModeAsync({
+      playsInSilentMode: true,
+      shouldPlayInBackground: true,
+      interruptionMode: 'doNotMix',
+    }).catch((error) => {
+      console.log(
+        'Could not configure background audio:',
+        error
+      );
+    });
+  }, []);
   const router = useRouter();
   const { week, run } = useLocalSearchParams();
 
@@ -205,15 +186,7 @@ export default function RunScreen() {
     useState('GPS WAITING');
 
   const soundRef =
-    useRef<Audio.Sound | null>(null);
-
-  const locationSubscription =
-    useRef<Location.LocationSubscription | null>(
-      null
-    );
-
-  const lastLocation =
-    useRef<LocationPoint | null>(null);
+  useRef<AudioPlayer | null>(null);
 
   const gpsDistance =
     useRef(0);
@@ -247,48 +220,84 @@ export default function RunScreen() {
     currentIntervalRef.current =
       intervalIndex;
 
-    /*
-     * Reset the last GPS point whenever the
-     * workout changes from RUN to WALK or
-     * WALK to RUN. This prevents a GPS jump
-     * between intervals being counted.
-     */
-    lastLocation.current = null;
-  }, [intervalIndex]);
+    if (!started || completed) {
+      return;
+    }
+
+    AsyncStorage.getItem(
+      GPS_STATE_KEY
+    )
+      .then((savedState) => {
+        if (!savedState) {
+          return;
+        }
+
+        const state =
+          JSON.parse(savedState);
+
+        state.counting =
+          workout[intervalIndex].type ===
+          'RUN';
+
+        state.lastLatitude = null;
+        state.lastLongitude = null;
+
+        return AsyncStorage.setItem(
+          GPS_STATE_KEY,
+          JSON.stringify(state)
+        );
+      })
+      .catch((error) => {
+        console.log(
+          'Could not update background GPS state:',
+          error
+        );
+      });
+  }, [
+    intervalIndex,
+    started,
+    completed,
+  ]);
 
   async function stopCurrentAudio() {
-    try {
-      if (soundRef.current) {
-        await soundRef.current.stopAsync();
-        await soundRef.current.unloadAsync();
-        soundRef.current = null;
-      }
-    } catch (error) {
-      console.log(
-        'Could not stop audio',
-        error
-      );
+  try {
+    if (soundRef.current) {
+      soundRef.current.pause();
+      soundRef.current.setActiveForLockScreen(false);
+      soundRef.current.remove();
       soundRef.current = null;
     }
+  } catch (error) {
+    console.log(
+      'Could not stop audio',
+      error
+    );
+    soundRef.current = null;
   }
+}
 
-  async function playAudio(file: number) {
-    await stopCurrentAudio();
+async function playAudio(file: number) {
+  await stopCurrentAudio();
 
-    try {
-      const { sound } =
-        await Audio.Sound.createAsync(file);
+  try {
+    const player =
+  createAudioPlayer(file);
 
-      soundRef.current = sound;
+    soundRef.current = player;
 
-      await sound.playAsync();
-    } catch (error) {
-      console.log(
-        'Could not play audio',
-        error
-      );
-    }
+    player.setActiveForLockScreen(true, {
+      title: 'Zero to Thirty',
+      artist: 'Fitter After 50',
+    });
+
+    player.play();
+  } catch (error) {
+    console.log(
+      'Could not play audio',
+      error
+    );
   }
+}
 
   async function playRunVoice() {
     await playAudio(
@@ -441,17 +450,36 @@ export default function RunScreen() {
   }
 
   /*
-   * GPS TRACKING
+   * BACKGROUND GPS TRACKING
    *
-   * ONLY RUN intervals count towards distance.
+   * The background task is now the
+   * single source of GPS distance.
    */
 
   async function stopGps() {
     try {
-      if (locationSubscription.current) {
-        locationSubscription.current.remove();
-        locationSubscription.current = null;
+      const isRegistered =
+        await Location.hasStartedLocationUpdatesAsync(
+          BACKGROUND_LOCATION_TASK
+        );
+
+      if (isRegistered) {
+        await Location.stopLocationUpdatesAsync(
+          BACKGROUND_LOCATION_TASK
+        );
       }
+
+      await AsyncStorage.setItem(
+        GPS_STATE_KEY,
+        JSON.stringify({
+          active: false,
+          counting: false,
+          distanceKm:
+            gpsDistance.current,
+          lastLatitude: null,
+          lastLongitude: null,
+        })
+      );
     } catch (error) {
       console.log(
         'Could not stop GPS',
@@ -462,116 +490,79 @@ export default function RunScreen() {
 
   async function startGps() {
     try {
-      const permission =
+      const foregroundPermission =
         await Location.requestForegroundPermissionsAsync();
 
-      if (permission.status !== 'granted') {
+      if (
+        foregroundPermission.status !==
+        'granted'
+      ) {
         setGpsStatus('GPS DENIED');
         return;
       }
 
-      setGpsStatus('GPS ACTIVE');
+      const backgroundPermission =
+        await Location.requestBackgroundPermissionsAsync();
+
+      if (
+        backgroundPermission.status !==
+        'granted'
+      ) {
+        setGpsStatus(
+          'BACKGROUND GPS DENIED'
+        );
+        return;
+      }
 
       await stopGps();
 
-      lastLocation.current = null;
+      gpsDistance.current = 0;
+      setDistanceKm(0);
 
-      locationSubscription.current =
-        await Location.watchPositionAsync(
-          {
-            accuracy:
-              Location.Accuracy.High,
-            timeInterval: 1000,
-            distanceInterval: 3,
+      await AsyncStorage.setItem(
+        GPS_STATE_KEY,
+        JSON.stringify({
+          active: true,
+          counting:
+            workout[
+              currentIntervalRef.current
+            ].type === 'RUN',
+          distanceKm: 0,
+          lastLatitude: null,
+          lastLongitude: null,
+        })
+      );
+
+      await Location.startLocationUpdatesAsync(
+        BACKGROUND_LOCATION_TASK,
+        {
+          accuracy:
+            Location.Accuracy.High,
+          timeInterval: 1000,
+          distanceInterval: 3,
+          pausesUpdatesAutomatically: false,
+          showsBackgroundLocationIndicator: true,
+          foregroundService: {
+            notificationTitle:
+              'Zero to Thirty',
+            notificationBody:
+              'Your run is being tracked.',
+            notificationColor:
+              '#FF8C00',
           },
-          (location) => {
-            if (
-              completedRef.current ||
-              pausedRef.current
-            ) {
-              return;
-            }
+        }
+      );
 
-            const interval =
-              workout[
-                currentIntervalRef.current
-              ];
-
-            /*
-             * Do NOT count warm-up,
-             * recovery walking or cool-down.
-             */
-            if (interval.type !== 'RUN') {
-              lastLocation.current = null;
-              return;
-            }
-
-            const accuracy =
-              location.coords.accuracy;
-
-            /*
-             * Ignore poor GPS fixes.
-             */
-            if (
-              accuracy !== null &&
-              accuracy > 50
-            ) {
-              return;
-            }
-
-            const point = {
-              latitude:
-                location.coords.latitude,
-              longitude:
-                location.coords.longitude,
-            };
-
-            if (!lastLocation.current) {
-              lastLocation.current = point;
-              return;
-            }
-
-            const segmentKm =
-              calculateDistanceKm(
-                lastLocation.current,
-                point
-              );
-
-            /*
-             * Ignore impossible GPS jumps.
-             * 200 metres between two updates is
-             * already more than enough tolerance.
-             */
-            if (
-              segmentKm > 0 &&
-              segmentKm <= 0.2
-            ) {
-              gpsDistance.current +=
-                segmentKm;
-
-              setDistanceKm(
-                gpsDistance.current
-              );
-            }
-
-            lastLocation.current = point;
-          },
-          (error) => {
-            console.log(
-              'GPS error',
-              error
-            );
-
-            setGpsStatus('GPS ERROR');
-          }
-        );
+      setGpsStatus('GPS ACTIVE');
     } catch (error) {
       console.log(
         'Could not start GPS',
         error
       );
 
-      setGpsStatus('GPS ERROR');
+      setGpsStatus(
+        'GPS ERROR'
+      );
     }
   }
 
@@ -582,6 +573,59 @@ export default function RunScreen() {
       Speech.stop();
     };
   }, []);
+
+  /*
+   * READ DISTANCE FROM BACKGROUND GPS
+   */
+
+  useEffect(() => {
+    if (
+      !started ||
+      completed
+    ) {
+      return;
+    }
+
+    const distanceTimer =
+      setInterval(async () => {
+        try {
+          const savedState =
+            await AsyncStorage.getItem(
+              GPS_STATE_KEY
+            );
+
+          if (!savedState) {
+            return;
+          }
+
+          const state =
+            JSON.parse(savedState);
+
+          if (
+            typeof state.distanceKm ===
+            'number'
+          ) {
+            gpsDistance.current =
+              state.distanceKm;
+
+            setDistanceKm(
+              state.distanceKm
+            );
+          }
+        } catch (error) {
+          console.log(
+            'Could not read background GPS distance:',
+            error
+          );
+        }
+      }, 1000);
+
+    return () =>
+      clearInterval(distanceTimer);
+  }, [
+    started,
+    completed,
+  ]);
 
   /*
    * INTERVAL START VOICES
@@ -786,68 +830,20 @@ export default function RunScreen() {
     km: number
   ) {
     try {
-      let {
-        data: {
-          user,
-        },
-      } = await supabase.auth.getUser();
-
-      /*
-       * Create the anonymous user if there
-       * isn't already a Supabase session.
-       */
-      if (!user) {
-        const { data, error } =
-          await supabase.auth.signInAnonymously();
-
-        if (error) {
-          throw error;
-        }
-
-        user = data.user;
-      }
-
-      if (!user) {
-        throw new Error(
-          'Could not create anonymous user'
-        );
-      }
-
-      const roundedKm =
-        Math.round(km * 100) / 100;
-
-      const { error } =
-        await supabase
-          .from('leaderboard_runs')
-          .upsert(
-            {
-              user_id: user.id,
-              runner_name:
-                'Zero to Thirty Runner',
-              km: roundedKm,
-              week_number:
-                Number(weekNumber),
-              run_number:
-                runNumber,
-            },
-            {
-              onConflict:
-                'user_id,week_number,run_number',
-            }
-          );
-
-      if (error) {
-        throw error;
-      }
+      await saveLeaderboardRun({
+        km,
+        runType: 'programme',
+        weekNumber: Number(weekNumber),
+        runNumber: runNumber,
+      });
 
       console.log(
-        'Leaderboard run saved:',
-        roundedKm,
-        'km'
+        'Zero to Thirty programme run saved:',
+        km
       );
     } catch (error) {
       console.log(
-        'Could not save run to leaderboard',
+        'Could not save programme run to leaderboard:',
         error
       );
     }
@@ -874,15 +870,8 @@ export default function RunScreen() {
         gpsDistance.current * 100
       ) / 100;
 
-    /*
-     * Local completion is saved first.
-     */
     await saveCompletedRun();
 
-    /*
-     * Then the same RUN + KM is saved
-     * to the Zero to Thirty leaderboard.
-     */
     await saveRunToLeaderboard(
       finalDistance
     );
@@ -1251,9 +1240,7 @@ export default function RunScreen() {
           {timerText}
         </Text>
 
-        <Text
-          style={styles.instruction}
-        >
+        <Text style={styles.instruction}>
           {current.name === 'Warm-up'
             ? 'WALK'
             : current.name === 'Cool-down'
@@ -1305,13 +1292,57 @@ export default function RunScreen() {
                   pausedRef.current =
                     next;
 
-                  if (next) {
-                    lastLocation.current =
-                      null;
-                  } else {
-                    lastLocation.current =
-                      null;
-                  }
+                  AsyncStorage.getItem(
+                    GPS_STATE_KEY
+                  )
+                    .then(
+                      (
+                        savedState
+                      ) => {
+                        if (
+                          !savedState
+                        ) {
+                          return;
+                        }
+
+                        const state =
+                          JSON.parse(
+                            savedState
+                          );
+
+                        state.active =
+                          true;
+
+                        state.counting =
+                          !next &&
+                          workout[
+                            currentIntervalRef
+                              .current
+                          ].type ===
+                            'RUN';
+
+                        state.lastLatitude =
+                          null;
+
+                        state.lastLongitude =
+                          null;
+
+                        return AsyncStorage.setItem(
+                          GPS_STATE_KEY,
+                          JSON.stringify(
+                            state
+                          )
+                        );
+                      }
+                    )
+                    .catch(
+                      (error) => {
+                        console.log(
+                          'Could not update GPS pause state:',
+                          error
+                        );
+                      }
+                    );
 
                   return next;
                 }

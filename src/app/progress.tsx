@@ -128,8 +128,7 @@ export default function ProgressScreen() {
   );
 
   const extraRuns = progress.extraRuns || 0;
-  const extraKm = progress.extraKm || 0;
-
+  const extraKm = Number(progress.extraKm || 0);
   return (
     <SafeAreaView style={styles.safeArea}>
 
@@ -227,7 +226,7 @@ export default function ProgressScreen() {
           <View style={styles.stat}>
 
             <Text style={styles.number}>
-              {extraKm}
+              {extraKm.toFixed(2)}
             </Text>
 
             <Text style={styles.label}>

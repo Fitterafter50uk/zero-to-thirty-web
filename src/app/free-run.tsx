@@ -1,995 +1,1680 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, {
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
+
 import {
-  Alert,
+  KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Location from 'expo-location';
+
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 
-const PROGRESS_KEY = 'zero_to_thirty_progress';
+import {
+  getRunnerName,
+  saveLeaderboardRun,
+  setRunnerName,
+} from '../lib/leaderboard';
 
-const ORANGE = '#FF8C00';
-const GREEN = '#22C55E';
-const RED = '#EF4444';
-const BLACK = '#111111';
-const CARD = 'rgba(0,0,0,0.72)';
-const WHITE = '#FFFFFF';
-const GREY = '#AAAAAA';
+const FREE_RUNS_KEY =
+  'zero_to_thirty_free_runs';
 
-type LastRun = {
-  distance: number;
-  seconds: number;
-};
+const PROGRESS_STORAGE_KEY =
+  'zero_to_thirty_progress';
+
+function calculateDistance(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+) {
+  const earthRadius = 6371;
+
+  const dLat =
+    ((lat2 - lat1) * Math.PI) / 180;
+
+  const dLon =
+    ((lon2 - lon1) * Math.PI) / 180;
+
+  const a =
+    Math.sin(dLat / 2) *
+      Math.sin(dLat / 2) +
+    Math.cos(
+      (lat1 * Math.PI) / 180
+    ) *
+      Math.cos(
+        (lat2 * Math.PI) / 180
+      ) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+
+  const c =
+    2 *
+    Math.atan2(
+      Math.sqrt(a),
+      Math.sqrt(1 - a)
+    );
+
+  return earthRadius * c;
+}
 
 export default function FreeRunScreen() {
   const router = useRouter();
 
-  const [seconds, setSeconds] = useState(0);
-  const [running, setRunning] = useState(false);
-  const [finished, setFinished] = useState(false);
+  const [seconds, setSeconds] =
+    useState(0);
 
-  const [gpsDistance, setGpsDistance] = useState(0);
-  const gpsDistanceRef = useRef(0);
+  const [running, setRunning] =
+    useState(false);
 
-  const [gpsStatus, setGpsStatus] = useState('GPS OFF');
+  const [finished, setFinished] =
+    useState(false);
 
-  const [totalKm, setTotalKm] = useState(0);
-  const [totalRuns, setTotalRuns] = useState(0);
-  const [totalSeconds, setTotalSeconds] = useState(0);
+  const [gpsDistance, setGpsDistance] =
+    useState(0);
 
-  const [personalBestDistance, setPersonalBestDistance] = useState(0);
-  const [personalBestTime, setPersonalBestTime] = useState(0);
+  const [gpsStatus, setGpsStatus] =
+    useState('GPS READY');
 
-  const [lastRuns, setLastRuns] = useState<LastRun[]>([]);
+  const [name, setName] =
+    useState('');
 
-  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [manualDistance, setManualDistance] =
+    useState('');
 
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [saveError, setSaveError] =
+    useState('');
 
-  const watchIdRef = useRef<number | null>(null);
+  const [saving, setSaving] =
+    useState(false);
 
-  const lastPositionRef = useRef<{
-    latitude: number;
-    longitude: number;
-    accuracy: number;
-  } | null>(null);
+  const [savedRuns, setSavedRuns] =
+    useState<any[]>([]);
 
-  const gpsStartedRef = useRef(false);
+  const locationSubscription =
+    useRef<Location.LocationSubscription | null>(
+      null
+    );
 
-  useFocusEffect(
-    useCallback(() => {
-      loadStats();
-    }, [])
-  );
+  const browserWatchId =
+    useRef<number | null>(null);
+
+  const lastLatitude =
+    useRef<number | null>(null);
+
+  const lastLongitude =
+    useRef<number | null>(null);
+
+  const totalDistanceRef =
+    useRef(0);
+
+  const timerStartRef =
+    useRef<number | null>(null);
+
+  const accumulatedSecondsRef =
+    useRef(0);
 
   useEffect(() => {
-    return () => {
-      stopGps();
-
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    };
+    loadSavedData();
   }, []);
 
-  useEffect(() => {
-    if (running) {
-      timerRef.current = setInterval(() => {
-        setSeconds((current) => current + 1);
-      }, 1000);
-    } else {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
+  async function loadSavedData() {
+    try {
+      const savedName =
+        await getRunnerName();
+
+      if (savedName) {
+        setName(savedName);
       }
+
+      const saved =
+        await AsyncStorage.getItem(
+          FREE_RUNS_KEY
+        );
+
+      if (saved) {
+        const parsed =
+          JSON.parse(saved);
+
+        if (Array.isArray(parsed)) {
+          setSavedRuns(parsed);
+        }
+      }
+    } catch (error) {
+      console.log(
+        'Could not load free run data:',
+        error
+      );
+    }
+  }
+
+  useEffect(() => {
+    if (!running || finished) {
+      return;
     }
 
-    return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, [running]);
-
-  const loadStats = async () => {
-    try {
-      const stored = await AsyncStorage.getItem(PROGRESS_KEY);
-
-      if (!stored) {
-        setTotalKm(0);
-        setTotalRuns(0);
-        setTotalSeconds(0);
-        setPersonalBestDistance(0);
-        setPersonalBestTime(0);
-        setLastRuns([]);
+    const updateTimer = () => {
+      if (
+        timerStartRef.current === null
+      ) {
         return;
       }
 
-      const progress = JSON.parse(stored);
-
-      setTotalKm(Number(progress.freeRunKm || 0));
-      setTotalRuns(Number(progress.freeRunRuns || 0));
-      setTotalSeconds(Number(progress.freeRunTotalSeconds || 0));
-
-      setPersonalBestDistance(
-        Number(progress.freeRunPersonalBestDistance || 0)
-      );
-
-      setPersonalBestTime(
-        Number(progress.freeRunPersonalBestTime || 0)
-      );
-
-      setLastRuns(
-        Array.isArray(progress.freeRunLastRuns)
-          ? progress.freeRunLastRuns
-          : []
-      );
-    } catch (error) {
-      console.log('Could not load free run stats', error);
-    }
-  };
-
-  const toRadians = (value: number) => {
-    return (value * Math.PI) / 180;
-  };
-
-  const calculateDistanceKm = (
-    lat1: number,
-    lon1: number,
-    lat2: number,
-    lon2: number
-  ) => {
-    const earthRadiusKm = 6371;
-
-    const dLat = toRadians(lat2 - lat1);
-    const dLon = toRadians(lon2 - lon1);
-
-    const a =
-      Math.sin(dLat / 2) ** 2 +
-      Math.cos(toRadians(lat1)) *
-        Math.cos(toRadians(lat2)) *
-        Math.sin(dLon / 2) ** 2;
-
-    const c =
-      2 *
-      Math.atan2(
-        Math.sqrt(a),
-        Math.sqrt(1 - a)
-      );
-
-    return earthRadiusKm * c;
-  };
-
-  const stopGps = () => {
-    if (
-      Platform.OS === 'web' &&
-      typeof navigator !== 'undefined' &&
-      navigator.geolocation &&
-      watchIdRef.current !== null
-    ) {
-      navigator.geolocation.clearWatch(watchIdRef.current);
-    }
-
-    watchIdRef.current = null;
-    lastPositionRef.current = null;
-    gpsStartedRef.current = false;
-  };
-
-  const startGps = async (): Promise<boolean> => {
-    if (Platform.OS !== 'web') {
-      setGpsStatus('GPS NOT AVAILABLE');
-      return false;
-    }
-
-    if (
-      typeof navigator === 'undefined' ||
-      !navigator.geolocation
-    ) {
-      setGpsStatus('GPS NOT AVAILABLE');
-      Alert.alert(
-        'GPS NOT AVAILABLE',
-        'This device/browser does not provide GPS location.'
-      );
-      return false;
-    }
-
-    try {
-      setGpsStatus('GPS SEARCHING');
-      lastPositionRef.current = null;
-
-      const success = (position: GeolocationPosition) => {
-        const latitude = position.coords.latitude;
-        const longitude = position.coords.longitude;
-        const accuracy = position.coords.accuracy ?? 999;
-
-        if (
-          !Number.isFinite(latitude) ||
-          !Number.isFinite(longitude)
-        ) {
-          return;
-        }
-
-        setGpsStatus('GPS ACTIVE');
-
-        if (lastPositionRef.current) {
-          const segmentKm = calculateDistanceKm(
-            lastPositionRef.current.latitude,
-            lastPositionRef.current.longitude,
-            latitude,
-            longitude
-          );
-
-          /*
-           * Ignore tiny GPS jitter.
-           * 0.003 km = 3 metres.
-           */
-          if (segmentKm >= 0.003 && segmentKm <= 0.5) {
-            gpsDistanceRef.current += segmentKm;
-
-            setGpsDistance(
-              gpsDistanceRef.current
-            );
-          }
-        }
-
-        lastPositionRef.current = {
-          latitude,
-          longitude,
-          accuracy,
-        };
-      };
-
-      const error = (error: GeolocationPositionError) => {
-        console.log(
-          'Browser GPS error:',
-          error.code,
-          error.message
+      const currentSeconds =
+        accumulatedSecondsRef.current +
+        Math.floor(
+          (Date.now() -
+            timerStartRef.current) /
+            1000
         );
 
-        if (error.code === 1) {
-          setGpsStatus('GPS DENIED');
-        } else if (error.code === 2) {
-          setGpsStatus('GPS SEARCHING');
-        } else {
-          setGpsStatus('GPS ERROR');
-        }
-      };
+      setSeconds(
+        currentSeconds
+      );
+    };
 
-      watchIdRef.current =
-        navigator.geolocation.watchPosition(
-          success,
-          error,
+    updateTimer();
+
+    const timer =
+      setInterval(
+        updateTimer,
+        250
+      );
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [running, finished]);
+
+  useEffect(() => {
+    return () => {
+      stopGPS();
+    };
+  }, []);
+
+  function stopGPS() {
+    if (
+      locationSubscription.current
+    ) {
+      locationSubscription.current.remove();
+
+      locationSubscription.current =
+        null;
+    }
+
+    if (
+      browserWatchId.current !== null &&
+      typeof navigator !==
+        'undefined' &&
+      navigator.geolocation
+    ) {
+      navigator.geolocation.clearWatch(
+        browserWatchId.current
+      );
+
+      browserWatchId.current =
+        null;
+    }
+  }
+
+  function processGPSPosition(
+    latitude: number,
+    longitude: number,
+    accuracy:
+      | number
+      | null
+      | undefined
+  ) {
+    if (
+      !Number.isFinite(latitude) ||
+      !Number.isFinite(longitude)
+    ) {
+      return;
+    }
+
+    if (
+      accuracy != null &&
+      Number.isFinite(accuracy) &&
+      accuracy > 100
+    ) {
+      setGpsStatus(
+        'GPS SEARCHING'
+      );
+
+      return;
+    }
+
+    if (
+      lastLatitude.current === null ||
+      lastLongitude.current === null
+    ) {
+      lastLatitude.current =
+        latitude;
+
+      lastLongitude.current =
+        longitude;
+
+      setGpsStatus(
+        'GPS TRACKING'
+      );
+
+      return;
+    }
+
+    const movement =
+      calculateDistance(
+        lastLatitude.current,
+        lastLongitude.current,
+        latitude,
+        longitude
+      );
+
+    if (
+      movement >= 0.001 &&
+      movement <= 0.2
+    ) {
+      totalDistanceRef.current +=
+        movement;
+
+      setGpsDistance(
+        totalDistanceRef.current
+      );
+    }
+
+    lastLatitude.current =
+      latitude;
+
+    lastLongitude.current =
+      longitude;
+
+    setGpsStatus(
+      'GPS TRACKING'
+    );
+  }
+
+  async function startGPS() {
+    try {
+      setGpsStatus(
+        'REQUESTING GPS'
+      );
+
+      if (
+        totalDistanceRef.current === 0
+      ) {
+        lastLatitude.current =
+          null;
+
+        lastLongitude.current =
+          null;
+
+        setGpsDistance(0);
+      }
+
+      stopGPS();
+
+      if (
+        Platform.OS === 'web' &&
+        typeof navigator !==
+          'undefined' &&
+        navigator.geolocation
+      ) {
+        setGpsStatus(
+          'GPS CONNECTING'
+        );
+
+        navigator.geolocation.getCurrentPosition(
+          position => {
+            processGPSPosition(
+              position.coords.latitude,
+              position.coords.longitude,
+              position.coords.accuracy
+            );
+          },
+          error => {
+            console.error(
+              'Browser GPS initial error:',
+              error
+            );
+
+            if (
+              error.code === 1
+            ) {
+              setGpsStatus(
+                'GPS DENIED'
+              );
+            } else if (
+              error.code === 2
+            ) {
+              setGpsStatus(
+                'GPS UNAVAILABLE'
+              );
+            } else if (
+              error.code === 3
+            ) {
+              setGpsStatus(
+                'GPS TIMEOUT'
+              );
+            } else {
+              setGpsStatus(
+                'GPS ERROR'
+              );
+            }
+          },
           {
             enableHighAccuracy: true,
-            maximumAge: 1000,
-            timeout: 15000,
+            timeout: 30000,
+            maximumAge: 0,
           }
         );
 
-      gpsStartedRef.current = true;
+        browserWatchId.current =
+          navigator.geolocation.watchPosition(
+            position => {
+              processGPSPosition(
+                position.coords.latitude,
+                position.coords.longitude,
+                position.coords.accuracy
+              );
+            },
+            error => {
+              console.error(
+                'Browser GPS watch error:',
+                error
+              );
+
+              if (
+                error.code === 1
+              ) {
+                setGpsStatus(
+                  'GPS DENIED'
+                );
+              } else if (
+                error.code === 2
+              ) {
+                setGpsStatus(
+                  'GPS UNAVAILABLE'
+                );
+              } else if (
+                error.code === 3
+              ) {
+                setGpsStatus(
+                  'GPS SEARCHING'
+                );
+              } else {
+                setGpsStatus(
+                  'GPS ERROR'
+                );
+              }
+            },
+            {
+              enableHighAccuracy: true,
+              timeout: 30000,
+              maximumAge: 0,
+            }
+          );
+
+        setGpsStatus(
+          'GPS SEARCHING'
+        );
+
+        return true;
+      }
+
+      const servicesEnabled =
+        await Location.hasServicesEnabledAsync();
+
+      if (!servicesEnabled) {
+        setGpsStatus(
+          'TURN ON LOCATION'
+        );
+
+        return false;
+      }
+
+      const permission =
+        await Location.requestForegroundPermissionsAsync();
+
+      if (
+        permission.status !==
+        'granted'
+      ) {
+        setGpsStatus(
+          'GPS DENIED'
+        );
+
+        return false;
+      }
+
+      locationSubscription.current =
+        await Location.watchPositionAsync(
+          {
+            accuracy:
+              Location.Accuracy.BestForNavigation,
+
+            distanceInterval: 1,
+
+            timeInterval: 1000,
+          },
+
+          location => {
+            processGPSPosition(
+              location.coords.latitude,
+              location.coords.longitude,
+              location.coords.accuracy
+            );
+          }
+        );
+
+      setGpsStatus(
+        'GPS SEARCHING'
+      );
 
       return true;
     } catch (error) {
-      console.log('Could not start browser GPS', error);
-      setGpsStatus('GPS ERROR');
+      console.error(
+        'GPS START ERROR:',
+        error
+      );
+
+      setGpsStatus(
+        'GPS ERROR'
+      );
+
       return false;
     }
-  };
+  }
 
-  const formatTime = (value: number) => {
-    const total = Math.max(0, Math.floor(value));
+  async function toggleRun() {
+    if (running) {
+      if (
+        timerStartRef.current !==
+        null
+      ) {
+        accumulatedSecondsRef.current +=
+          Math.floor(
+            (Date.now() -
+              timerStartRef.current) /
+              1000
+          );
 
-    const hours = Math.floor(total / 3600);
+        timerStartRef.current =
+          null;
+      }
 
-    const minutes = Math.floor(
-      (total % 3600) / 60
-    );
-
-    const secs = total % 60;
-
-    if (hours > 0) {
-      return (
-        String(hours).padStart(2, '0') +
-        ':' +
-        String(minutes).padStart(2, '0') +
-        ':' +
-        String(secs).padStart(2, '0')
+      setSeconds(
+        accumulatedSecondsRef.current
       );
+
+      setRunning(false);
+
+      stopGPS();
+
+      setGpsStatus(
+        'GPS PAUSED'
+      );
+
+      return;
     }
 
-    return (
-      String(minutes).padStart(2, '0') +
-      ':' +
-      String(secs).padStart(2, '0')
-    );
-  };
-
-  const startRun = async () => {
-    stopGps();
-
-    setSeconds(0);
-    setFinished(false);
-
-    setGpsDistance(0);
-    gpsDistanceRef.current = 0;
-
-    setGpsStatus('GPS STARTING');
-
-    const gpsStarted = await startGps();
+    const gpsStarted =
+      await startGPS();
 
     if (!gpsStarted) {
       return;
     }
 
+    timerStartRef.current =
+      Date.now();
+
     setRunning(true);
-  };
+  }
 
-  const endRun = () => {
-    setRunning(false);
-    stopGps();
-    setFinished(true);
-    setGpsStatus('GPS OFF');
-  };
+  function finishRun() {
+    if (
+      timerStartRef.current !==
+      null
+    ) {
+      accumulatedSecondsRef.current +=
+        Math.floor(
+          (Date.now() -
+            timerStartRef.current) /
+            1000
+        );
 
-  const saveRun = async () => {
-    const km = Number(
-      gpsDistanceRef.current.toFixed(2)
+      timerStartRef.current =
+        null;
+    }
+
+    setSeconds(
+      accumulatedSecondsRef.current
     );
 
-    if (!Number.isFinite(km) || km <= 0) {
-      Alert.alert(
-        'NO GPS DISTANCE',
-        'No GPS running distance was recorded. Please make sure location is enabled and try again.'
-      );
+    setRunning(false);
+
+    stopGPS();
+
+    setGpsStatus(
+      'GPS COMPLETE'
+    );
+
+    setFinished(true);
+  }
+
+  async function saveRun() {
+    if (saving) {
       return;
     }
 
-    if (seconds <= 0) {
-      Alert.alert(
-        'RUN TIME',
-        'The run must have a recorded time before it can be saved.'
+    setSaveError('');
+
+    const cleanName =
+      name.trim();
+
+    if (
+      cleanName.length < 2
+    ) {
+      setSaveError(
+        'Please enter your name.'
       );
+
       return;
     }
 
-    try {
-      const stored =
-        await AsyncStorage.getItem(PROGRESS_KEY);
+    const enteredDistance =
+      Number.parseFloat(
+        manualDistance
+      ) || 0;
 
-      const progress = stored
-        ? JSON.parse(stored)
-        : {};
-
-      const oldKm =
-        Number(progress.freeRunKm || 0);
-
-      const oldRuns =
-        Number(progress.freeRunRuns || 0);
-
-      const oldTotalSeconds =
-        Number(
-          progress.freeRunTotalSeconds || 0
-        );
-
-      const oldPBDistance =
-        Number(
-          progress.freeRunPersonalBestDistance ||
-            0
-        );
-
-      const oldPBTime =
-        Number(
-          progress.freeRunPersonalBestTime || 0
-        );
-
-      const oldLastRuns =
-        Array.isArray(progress.freeRunLastRuns)
-          ? progress.freeRunLastRuns
-          : [];
-
-      const newKm = oldKm + km;
-      const newRuns = oldRuns + 1;
-
-      const newTotalSeconds =
-        oldTotalSeconds + seconds;
-
-      const newPBDistance = Math.max(
-        oldPBDistance,
-        km
+    /*
+     * IMPORTANT:
+     * The leaderboard uses the manually
+     * entered KM, exactly like Free Walk
+     * uses the manually entered steps.
+     *
+     * GPS remains visible and is saved locally,
+     * but it does NOT determine the leaderboard
+     * value.
+     */
+    if (
+      enteredDistance <= 0
+    ) {
+      setSaveError(
+        'Please enter the distance in KM.'
       );
 
-      const newPBTime = Math.max(
-        oldPBTime,
-        seconds
-      );
-
-      const newRun = {
-        distance: km,
-        seconds,
-      };
-
-      const newLastRuns = [
-        newRun,
-        ...oldLastRuns,
-      ].slice(0, 3);
-
-      progress.freeRunKm = newKm;
-      progress.freeRunRuns = newRuns;
-      progress.freeRunTotalSeconds =
-        newTotalSeconds;
-
-      progress.freeRunPersonalBestDistance =
-        newPBDistance;
-
-      progress.freeRunPersonalBestTime =
-        newPBTime;
-
-      progress.freeRunLastRuns =
-        newLastRuns;
-
-      progress.extraRuns = newRuns;
-      progress.extraKm = newKm;
-
-      await AsyncStorage.setItem(
-        PROGRESS_KEY,
-        JSON.stringify(progress)
-      );
-
-      setTotalKm(newKm);
-      setTotalRuns(newRuns);
-      setTotalSeconds(newTotalSeconds);
-
-      setPersonalBestDistance(
-        newPBDistance
-      );
-
-      setPersonalBestTime(newPBTime);
-
-      setLastRuns(newLastRuns);
-
-      setRunning(false);
-      setFinished(false);
-
-      stopGps();
-
-      setGpsDistance(0);
-      gpsDistanceRef.current = 0;
-
-      setGpsStatus('GPS OFF');
-      setSeconds(0);
-
-      Alert.alert(
-        'RUN SAVED',
-        `${km.toFixed(
-          2
-        )} KM added to your Free Run stats.`
-      );
-    } catch (error) {
-      console.log(
-        'Could not save free run',
-        error
-      );
-
-      Alert.alert(
-        'ERROR',
-        'Could not save the run.'
-      );
+      return;
     }
-  };
 
-  const resetStats = () => {
-    setShowResetConfirm(true);
-  };
+    setSaving(true);
 
-  const confirmResetStats = async () => {
     try {
-      setRunning(false);
-      stopGps();
+      await setRunnerName(
+        cleanName
+      );
 
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
+      const saved =
+        await AsyncStorage.getItem(
+          FREE_RUNS_KEY
+        );
+
+      let runs: any[] = [];
+
+      if (saved) {
+        try {
+          const parsed =
+            JSON.parse(saved);
+
+          if (
+            Array.isArray(parsed)
+          ) {
+            runs = parsed;
+          }
+        } catch {
+          runs = [];
+        }
       }
 
-      const stored =
-        await AsyncStorage.getItem(
-          PROGRESS_KEY
+      const finalDistance =
+        Number(
+          enteredDistance.toFixed(
+            2
+          )
         );
 
-      const progress = stored
-        ? JSON.parse(stored)
-        : {};
+      const newRun = {
+        id: `${Date.now()}`,
 
-      delete progress.freeRunKm;
-      delete progress.freeRunRuns;
-      delete progress.freeRunTotalSeconds;
-      delete progress.freeRunPersonalBestDistance;
-      delete progress.freeRunPersonalBestTime;
-      delete progress.freeRunLastRuns;
+        type: 'free',
 
-      delete progress.extraRuns;
-      delete progress.extraKm;
-      delete progress.longestFreeRun;
+        date:
+          new Date().toISOString(),
+
+        durationSeconds:
+          seconds,
+
+        distance:
+          finalDistance,
+
+        gpsDistance:
+          Number(
+            gpsDistance.toFixed(
+              2
+            )
+          ),
+
+        manualDistance:
+          finalDistance,
+
+        displayName:
+          cleanName,
+      };
+
+      runs.push(
+        newRun
+      );
 
       await AsyncStorage.setItem(
-        PROGRESS_KEY,
-        JSON.stringify(progress)
+        FREE_RUNS_KEY,
+        JSON.stringify(
+          runs
+        )
       );
 
-      setTotalKm(0);
-      setTotalRuns(0);
-      setTotalSeconds(0);
+      setSavedRuns(runs);
 
-      setPersonalBestDistance(0);
-      setPersonalBestTime(0);
-      setLastRuns([]);
-
-      setFinished(false);
-
-      setGpsDistance(0);
-      gpsDistanceRef.current = 0;
-
-      setGpsStatus('GPS OFF');
-      setSeconds(0);
-
-      setShowResetConfirm(false);
-
-      Alert.alert(
-        'RUN STATS RESET',
-        'All Free Run statistics have been reset.'
-      );
-    } catch (error) {
       console.log(
-        'Could not reset free run stats',
+        'FREE RUN SAVED LOCALLY:',
+        newRun
+      );
+
+      /*
+       * SAME LEADERBOARD METHOD AS THE
+       * PROGRAMMED RUNS.
+       *
+       * MANUAL KM is deliberately sent here.
+       */
+      await saveLeaderboardRun({
+        km: finalDistance,
+        runType: 'free',
+        weekNumber: 0,
+        runNumber: 0,
+      });
+
+      console.log(
+        'FREE RUN LEADERBOARD SAVE SUCCESS:',
+        finalDistance
+      );
+
+      router.replace(
+        '/leaderboard'
+      );
+    } catch (error: any) {
+      console.error(
+        'FREE RUN SAVE ERROR:',
         error
       );
 
-      setShowResetConfirm(false);
+      setSaveError(
+        `Leaderboard save failed: ${
+          error?.message ||
+          'Unknown error'
+        }`
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
 
-      Alert.alert(
-        'ERROR',
-        'Could not reset the Free Run statistics.'
+  async function deleteRun(
+    id: string
+  ) {
+    try {
+      const updated =
+        savedRuns.filter(
+          run =>
+            String(run.id) !==
+            String(id)
+        );
+
+      setSavedRuns(updated);
+
+      await AsyncStorage.setItem(
+        FREE_RUNS_KEY,
+        JSON.stringify(
+          updated
+        )
+      );
+    } catch (error) {
+      console.error(
+        'DELETE FREE RUN ERROR:',
+        error
       );
     }
-  };
+  }
+
+  async function deleteAllFreeRuns() {
+    const confirmed =
+      typeof window !==
+        'undefined'
+        ? window.confirm(
+            'DELETE ALL SAVED FREE RUNS FROM THIS PHONE? This will not delete leaderboard entries.'
+          )
+        : true;
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      await AsyncStorage.removeItem(
+        FREE_RUNS_KEY
+      );
+
+      setSavedRuns([]);
+
+      setSaveError('');
+
+      console.log(
+        'ALL FREE RUN DATA DELETED'
+      );
+    } catch (error) {
+      console.error(
+        'DELETE ALL FREE RUNS ERROR:',
+        error
+      );
+
+      setSaveError(
+        'Could not delete saved free runs.'
+      );
+    }
+  }
+
+  function quitRun() {
+    setRunning(false);
+
+    if (
+      timerStartRef.current !==
+      null
+    ) {
+      accumulatedSecondsRef.current +=
+        Math.floor(
+          (Date.now() -
+            timerStartRef.current) /
+            1000
+        );
+
+      timerStartRef.current =
+        null;
+    }
+
+    stopGPS();
+
+    router.back();
+  }
+
+  function formatTime(
+    value: number
+  ) {
+    const hours =
+      Math.floor(
+        value / 3600
+      );
+
+    const minutes =
+      Math.floor(
+        (value % 3600) / 60
+      );
+
+    const secs =
+      value % 60;
+
+    if (hours > 0) {
+      return (
+        String(hours).padStart(
+          2,
+          '0'
+        ) +
+        ':' +
+        String(minutes).padStart(
+          2,
+          '0'
+        ) +
+        ':' +
+        String(secs).padStart(
+          2,
+          '0'
+        )
+      );
+    }
+
+    return (
+      String(minutes).padStart(
+        2,
+        '0'
+      ) +
+      ':' +
+      String(secs).padStart(
+        2,
+        '0'
+      )
+    );
+  }
+
+  const enteredDistance =
+    Number.parseFloat(
+      manualDistance
+    ) || 0;
+
+  const totalRunKm =
+    savedRuns.reduce(
+      (total, run) =>
+        total +
+        (Number(run.distance) ||
+          0),
+      0
+    );
+
+  const totalRunSeconds =
+    savedRuns.reduce(
+      (total, run) =>
+        total +
+        (Number(
+          run.durationSeconds
+        ) || 0),
+      0
+    );
+
+  const longestRun =
+    savedRuns.length > 0
+      ? Math.max(
+          ...savedRuns.map(
+            run =>
+              Number(
+                run.distance
+              ) || 0
+          )
+        )
+      : 0;
+
+  const completedDistance =
+    enteredDistance;
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <ScrollView
-        contentContainerStyle={styles.container}
-        showsVerticalScrollIndicator={false}
+    <SafeAreaView
+      style={styles.safeArea}
+    >
+      <KeyboardAvoidingView
+        style={styles.screen}
+        behavior={
+          Platform.OS === 'ios'
+            ? 'padding'
+            : undefined
+        }
       >
-        <Text style={styles.heading}>
-          FREE RUN
-        </Text>
-
-        <Text style={styles.subheading}>
-          RUN YOUR OWN RUN
-        </Text>
-
-        {/* ========================= */}
-        {/* FREE RUN */}
-        {/* ========================= */}
-
-        <View style={styles.sectionHeading}>
-          <Text style={styles.sectionHeadingText}>
-            FREE RUN
-          </Text>
-        </View>
-
-        <View style={styles.gpsBox}>
-          <Text style={styles.gpsTitle}>
-            RUNNING DISTANCE
-          </Text>
-
-          <Text style={styles.gpsValue}>
-            {gpsDistance.toFixed(2)} KM
-          </Text>
-
-          <Text
-            style={[
-              styles.gpsStatus,
-              gpsStatus === 'GPS ACTIVE' &&
-                styles.gpsActive,
-              gpsStatus === 'GPS ERROR' &&
-                styles.gpsError,
-              gpsStatus === 'GPS DENIED' &&
-                styles.gpsError,
-            ]}
-          >
-            {gpsStatus}
-          </Text>
-        </View>
-
-        <View style={styles.timerBox}>
-          <Text style={styles.timer}>
-            {formatTime(seconds)}
-          </Text>
-
-          <Text style={styles.timerLabel}>
-            RUN TIME
-          </Text>
-        </View>
-
-        {!running && !finished && (
+        <View
+          style={styles.header}
+        >
           <Pressable
-            style={({ pressed }) => [
-              styles.startButton,
-              pressed &&
-                styles.startButtonPressed,
-            ]}
-            onPress={startRun}
+            style={
+              styles.backButton
+            }
+            onPress={quitRun}
           >
-            <Text style={styles.startText}>
-              START RUN
+            <Text
+              style={
+                styles.backText
+              }
+            >
+              {'<'}
             </Text>
           </Pressable>
-        )}
 
-        {running && (
-          <Pressable
-            style={({ pressed }) => [
-              styles.endButton,
-              pressed &&
-                styles.endButtonPressed,
-            ]}
-            onPress={endRun}
+          <View
+            style={
+              styles.headerCentre
+            }
           >
-            <Text style={styles.endText}>
-              END RUN
-            </Text>
-          </Pressable>
-        )}
-
-        {finished && (
-          <View style={styles.saveBox}>
-            <Text style={styles.saveTitle}>
-              RUN COMPLETE
+            <Text
+              style={
+                styles.headerTitle
+              }
+            >
+              FREE RUN
             </Text>
 
-            <View style={styles.completeStats}>
-              <View style={styles.completeStat}>
+            <Text
+              style={
+                styles.headerSubtitle
+              }
+            >
+              ZERO TO THIRTY
+            </Text>
+          </View>
+        </View>
+
+        <ScrollView
+          showsVerticalScrollIndicator={
+            false
+          }
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={
+            styles.scrollContent
+          }
+        >
+          <View
+            style={
+              styles.introCard
+            }
+          >
+            <Text
+              style={
+                styles.introTitle
+              }
+            >
+              FREE RUN
+            </Text>
+
+            <Text
+              style={
+                styles.introText
+              }
+            >
+              No programme. No target. Just run.
+            </Text>
+          </View>
+
+          <View
+            style={
+              styles.timerCard
+            }
+          >
+            <Text
+              style={
+                styles.timerLabel
+              }
+            >
+              RUN TIME
+            </Text>
+
+            <Text
+              style={styles.timer}
+            >
+              {formatTime(
+                seconds
+              )}
+            </Text>
+          </View>
+
+          <View
+            style={
+              styles.distanceCard
+            }
+          >
+            <Text
+              style={
+                styles.sectionTitle
+              }
+            >
+              GPS DISTANCE
+            </Text>
+
+            <Text
+              style={
+                styles.distanceNumber
+              }
+            >
+              {gpsDistance.toFixed(
+                2
+              )}{' '}
+              KM
+            </Text>
+
+            <Text
+              style={
+                styles.gpsStatus
+              }
+            >
+              {gpsStatus}
+            </Text>
+          </View>
+
+          {!finished && (
+            <View
+              style={
+                styles.stepsLiveCard
+              }
+            >
+              <Text
+                style={
+                  styles.sectionTitle
+                }
+              >
+                LEADERBOARD DISTANCE
+              </Text>
+
+              <Text
+                style={
+                  styles.stepsWaiting
+                }
+              >
+                ENTER AFTER RUN
+              </Text>
+
+              <Text
+                style={
+                  styles.stepsLiveStatus
+                }
+              >
+                USE THE DISTANCE FROM YOUR PHONE OR WATCH
+              </Text>
+            </View>
+          )}
+
+          {!finished && (
+            <Pressable
+              style={[
+                styles.mainButton,
+                running &&
+                  styles.pauseButton,
+              ]}
+              onPress={
+                toggleRun
+              }
+            >
+              <Text
+                style={
+                  styles.mainButtonText
+                }
+              >
+                {running
+                  ? 'PAUSE RUN'
+                  : 'START RUN'}
+              </Text>
+            </Pressable>
+          )}
+
+          {running && (
+            <View
+              style={
+                styles.finishArea
+              }
+            >
+              <Text
+                style={
+                  styles.finishHint
+                }
+              >
+                FINISHED YOUR RUN?
+              </Text>
+
+              <Pressable
+                style={
+                  styles.finishButton
+                }
+                onPress={
+                  finishRun
+                }
+              >
                 <Text
-                  style={styles.completeNumber}
+                  style={
+                    styles.finishIcon
+                  }
                 >
-                  {gpsDistance.toFixed(2)}
+                  ✓
                 </Text>
 
                 <Text
-                  style={styles.completeLabel}
+                  style={
+                    styles.finishButtonText
+                  }
                 >
+                  FINISH RUN
+                </Text>
+
+                <Text
+                  style={
+                    styles.finishSubText
+                  }
+                >
+                  TAP HERE TO FINISH AND SAVE
+                </Text>
+              </Pressable>
+            </View>
+          )}
+
+          {finished && (
+            <View
+              style={
+                styles.completedCard
+              }
+            >
+              <Text
+                style={
+                  styles.completedTitle
+                }
+              >
+                RUN COMPLETE
+              </Text>
+
+              <Text
+                style={
+                  styles.completedDistance
+                }
+              >
+                {gpsDistance > 0
+                  ? gpsDistance.toFixed(
+                      2
+                    )
+                  : '0.00'}{' '}
+                KM
+              </Text>
+
+              <Text
+                style={
+                  styles.completedTime
+                }
+              >
+                {formatTime(
+                  seconds
+                )}
+              </Text>
+
+              <Text
+                style={
+                  styles.completedMessage
+                }
+              >
+                GREAT WORK. ENTER YOUR DISTANCE BELOW.
+              </Text>
+            </View>
+          )}
+
+          {finished && (
+            <View
+              style={
+                styles.inputCard
+              }
+            >
+              <Text
+                style={
+                  styles.sectionTitle
+                }
+              >
+                ADD YOUR DETAILS
+              </Text>
+
+              <Text
+                style={
+                  styles.inputHelp
+                }
+              >
+                Enter the distance shown on your phone or watch. This is the KM that will be added to this week's leaderboard.
+              </Text>
+
+              <Text
+                style={
+                  styles.inputLabel
+                }
+              >
+                YOUR NAME
+              </Text>
+
+              <TextInput
+                value={name}
+                onChangeText={
+                  setName
+                }
+                placeholder="Enter your name"
+                placeholderTextColor="#666666"
+                maxLength={30}
+                autoCapitalize="words"
+                style={
+                  styles.input
+                }
+              />
+
+              <Text
+                style={
+                  styles.inputLabel
+                }
+              >
+                YOUR DISTANCE (KM)
+              </Text>
+
+              <TextInput
+                value={
+                  manualDistance
+                }
+                onChangeText={
+                  setManualDistance
+                }
+                placeholder={
+                  gpsDistance > 0
+                    ? gpsDistance.toFixed(
+                        2
+                      )
+                    : 'e.g. 5.2'
+                }
+                placeholderTextColor="#666666"
+                keyboardType="decimal-pad"
+                style={
+                  styles.stepsInput
+                }
+              />
+
+              <View
+                style={
+                  styles.summaryBox
+                }
+              >
+                <Text
+                  style={
+                    styles.summaryLabel
+                  }
+                >
+                  NAME
+                </Text>
+
+                <Text
+                  style={
+                    styles.summaryValue
+                  }
+                >
+                  {name.trim() ||
+                    '—'}
+                </Text>
+
+                <Text
+                  style={
+                    styles.summaryLabel
+                  }
+                >
+                  LEADERBOARD KM
+                </Text>
+
+                <Text
+                  style={
+                    styles.summaryValue
+                  }
+                >
+                  {completedDistance >
+                  0
+                    ? completedDistance.toFixed(
+                        2
+                      )
+                    : '—'}{' '}
                   KM
+                </Text>
+
+                <Text
+                  style={
+                    styles.summaryLabel
+                  }
+                >
+                  GPS DISTANCE
+                </Text>
+
+                <Text
+                  style={
+                    styles.summaryValue
+                  }
+                >
+                  {gpsDistance.toFixed(
+                    2
+                  )}{' '}
+                  KM
+                </Text>
+
+                <Text
+                  style={
+                    styles.summaryLabel
+                  }
+                >
+                  RUN TIME
+                </Text>
+
+                <Text
+                  style={
+                    styles.summaryValue
+                  }
+                >
+                  {formatTime(
+                    seconds
+                  )}
                 </Text>
               </View>
 
-              <View style={styles.completeStat}>
+              {saveError ? (
                 <Text
-                  style={styles.completeNumber}
+                  style={
+                    styles.errorText
+                  }
                 >
-                  {formatTime(seconds)}
+                  {saveError}
+                </Text>
+              ) : null}
+
+              <Pressable
+                style={[
+                  styles.saveButton,
+                  saving &&
+                    styles.saveButtonDisabled,
+                ]}
+                onPress={
+                  saveRun
+                }
+                disabled={
+                  saving
+                }
+              >
+                <Text
+                  style={
+                    styles.saveButtonText
+                  }
+                >
+                  {saving
+                    ? 'SAVING...'
+                    : 'SAVE FREE RUN'}
+                </Text>
+              </Pressable>
+            </View>
+          )}
+
+          <Pressable
+            style={
+              styles.leaderboardButton
+            }
+            onPress={() =>
+              router.push(
+                '/leaderboard'
+              )
+            }
+          >
+            <View
+              style={
+                styles.leaderboardIconCircle
+              }
+            >
+              <Text
+                style={
+                  styles.leaderboardIcon
+                }
+              >
+                🏆
+              </Text>
+            </View>
+
+            <Text
+              style={
+                styles.leaderboardText
+              }
+            >
+              {finished
+                ? 'RUN TO LEADERBOARD'
+                : 'WEEKLY KM LEADERBOARD'}
+            </Text>
+          </Pressable>
+
+          <View
+            style={
+              styles.statsCard
+            }
+          >
+            <Text
+              style={
+                styles.sectionTitle
+              }
+            >
+              FREE RUN STATS
+            </Text>
+
+            <View
+              style={
+                styles.statsRow
+              }
+            >
+              <View
+                style={
+                  styles.statBox
+                }
+              >
+                <Text
+                  style={
+                    styles.statValue
+                  }
+                >
+                  {totalRunKm.toFixed(
+                    2
+                  )}
                 </Text>
 
                 <Text
-                  style={styles.completeLabel}
+                  style={
+                    styles.statLabel
+                  }
+                >
+                  TOTAL KM
+                </Text>
+              </View>
+
+              <View
+                style={
+                  styles.statBox
+                }
+              >
+                <Text
+                  style={
+                    styles.statValue
+                  }
+                >
+                  {savedRuns.length}
+                </Text>
+
+                <Text
+                  style={
+                    styles.statLabel
+                  }
+                >
+                  RUNS
+                </Text>
+              </View>
+
+              <View
+                style={
+                  styles.statBox
+                }
+              >
+                <Text
+                  style={
+                    styles.statValue
+                  }
+                >
+                  {formatTime(
+                    totalRunSeconds
+                  )}
+                </Text>
+
+                <Text
+                  style={
+                    styles.statLabel
+                  }
                 >
                   TIME
                 </Text>
               </View>
             </View>
 
-            <Pressable
-              style={({ pressed }) => [
-                styles.saveButton,
-                pressed &&
-                  styles.saveButtonPressed,
-              ]}
-              onPress={saveRun}
-            >
-              <Text style={styles.saveText}>
-                SAVE RUN
-              </Text>
-            </Pressable>
-          </View>
-        )}
-
-        {/* ========================= */}
-        {/* LAST 3 RUNS */}
-        {/* ========================= */}
-
-        <View style={styles.sectionHeading}>
-          <Text style={styles.sectionHeadingText}>
-            LAST 3 FREE RUNS
-          </Text>
-        </View>
-
-        {lastRuns.length === 0 ? (
-          <View style={styles.emptyBox}>
-            <Text style={styles.emptyText}>
-              NO FREE RUNS RECORDED YET
-            </Text>
-          </View>
-        ) : (
-          lastRuns.map((run, index) => (
             <View
-              key={`${run.seconds}-${run.distance}-${index}`}
-              style={styles.lastRunBox}
+              style={
+                styles.bestRow
+              }
             >
-              <View style={styles.lastRunLeft}>
-                <View style={styles.runBadge}>
-                  <Text style={styles.runBadgeText}>
-                    {index + 1}
-                  </Text>
-                </View>
-
-                <View>
-                  <Text
-                    style={styles.lastRunNumber}
-                  >
-                    RUN {index + 1}
-                  </Text>
-
-                  <Text
-                    style={styles.lastRunTime}
-                  >
-                    {formatTime(run.seconds)}
-                  </Text>
-                </View>
-              </View>
+              <Text
+                style={
+                  styles.bestLabel
+                }
+              >
+                LONGEST RUN
+              </Text>
 
               <Text
-                style={styles.lastRunDistance}
-              >
-                {Number(run.distance).toFixed(2)} KM
-              </Text>
-            </View>
-          ))
-        )}
-
-        {/* ========================= */}
-        {/* STATS */}
-        {/* ========================= */}
-
-        <View style={styles.sectionHeading}>
-          <Text style={styles.sectionHeadingText}>
-            FREE RUN STATS
-          </Text>
-        </View>
-
-        <Pressable
-          style={({ pressed }) => [
-            styles.resetButton,
-            pressed &&
-              styles.resetButtonPressed,
-          ]}
-          onPress={resetStats}
-          hitSlop={8}
-        >
-          <Text style={styles.resetText}>
-            RESET RUN STATS
-          </Text>
-        </Pressable>
-
-        {showResetConfirm && (
-          <View style={styles.resetConfirmBox}>
-            <Text
-              style={styles.resetConfirmTitle}
-            >
-              RESET FREE RUN STATS?
-            </Text>
-
-            <Text
-              style={styles.resetConfirmDescription}
-            >
-              This will clear your Free Run
-              kilometres, runs, total time,
-              personal bests and last 3 runs.
-              It will also clear the Free Run
-              figures shown on the Progress page.
-            </Text>
-
-            <View
-              style={styles.resetConfirmButtons}
-            >
-              <Pressable
-                style={styles.cancelResetButton}
-                onPress={() =>
-                  setShowResetConfirm(false)
-                }
-              >
-                <Text
-                  style={styles.cancelResetText}
-                >
-                  CANCEL
-                </Text>
-              </Pressable>
-
-              <Pressable
                 style={
-                  styles.confirmResetButton
+                  styles.bestValue
                 }
-                onPress={confirmResetStats}
               >
-                <Text
-                  style={styles.confirmResetText}
-                >
-                  RESET
-                </Text>
-              </Pressable>
-            </View>
-          </View>
-        )}
-
-        <View style={styles.stats}>
-          <View style={styles.stat}>
-            <Text style={styles.number}>
-              {totalKm.toFixed(2)}
-            </Text>
-
-            <Text style={styles.label}>
-              KM RAN
-            </Text>
-          </View>
-
-          <View style={styles.stat}>
-            <Text style={styles.number}>
-              {totalRuns}
-            </Text>
-
-            <Text style={styles.label}>
-              RUNS
-            </Text>
-          </View>
-
-          <View style={styles.stat}>
-            <Text style={styles.number}>
-              {formatTime(totalSeconds)}
-            </Text>
-
-            <Text style={styles.label}>
-              TIME RAN
-            </Text>
-          </View>
-        </View>
-
-        {/* ========================= */}
-        {/* PERSONAL BESTS */}
-        {/* ========================= */}
-
-        <View style={styles.pbBox}>
-          <View style={styles.pbLeft}>
-            <Text style={styles.trophy}>
-              🏆
-            </Text>
-
-            <View>
-              <Text style={styles.pbSmall}>
-                PERSONAL BEST
-              </Text>
-
-              <Text style={styles.pbTitle}>
-                LONGEST DISTANCE
+                {longestRun.toFixed(
+                  2
+                )}{' '}
+                KM
               </Text>
             </View>
           </View>
 
-          <Text style={styles.pbValue}>
-            {personalBestDistance.toFixed(2)} KM
-          </Text>
-        </View>
+          {savedRuns.length > 0 && (
+            <View
+              style={
+                styles.historyCard
+              }
+            >
+              <Text
+                style={
+                  styles.sectionTitle
+                }
+              >
+                RUN HISTORY
+              </Text>
 
-        <View style={styles.pbBox}>
-          <View style={styles.pbLeft}>
-            <Text style={styles.trophy}>
-              🏆
+              {savedRuns
+  .slice()
+  .reverse()
+  .slice(0, 3)
+  .map(run => (
+                  <View
+                    key={String(
+                      run.id
+                    )}
+                    style={
+                      styles.historyItem
+                    }
+                  >
+                    <View
+                      style={
+                        styles.historyInfo
+                      }
+                    >
+                      <Text
+                        style={
+                          styles.historyDistance
+                        }
+                      >
+                        {Number(
+                          run.distance ||
+                            0
+                        ).toFixed(
+                          2
+                        )}{' '}
+                        KM
+                      </Text>
+
+                      <Text
+                        style={
+                          styles.historyDate
+                        }
+                      >
+                        {run.date
+                          ? new Date(
+                              run.date
+                            ).toLocaleDateString()
+                          : ''}
+                        {'  •  '}
+                        {formatTime(
+                          Number(
+                            run.durationSeconds ||
+                              0
+                          )
+                        )}
+                      </Text>
+                    </View>
+
+                    <Pressable
+                      style={
+                        styles.historyDelete
+                      }
+                      onPress={() =>
+                        deleteRun(
+                          run.id
+                        )
+                      }
+                    >
+                      <Text
+                        style={
+                          styles.historyDeleteText
+                        }
+                      >
+                        DELETE
+                      </Text>
+                    </Pressable>
+                  </View>
+                ))}
+            </View>
+          )}
+
+          <Pressable
+            style={
+              styles.deleteButton
+            }
+            onPress={
+              deleteAllFreeRuns
+            }
+          >
+            <Text
+              style={
+                styles.deleteButtonText
+              }
+            >
+              DELETE ALL FREE RUN DATA
             </Text>
 
-            <View>
-              <Text style={styles.pbSmall}>
-                PERSONAL BEST
+            <Text
+              style={
+                styles.deleteButtonSubText
+              }
+            >
+              Removes saved runs from this phone only
+            </Text>
+          </Pressable>
+
+          {!finished && (
+            <Pressable
+              style={
+                styles.quitButton
+              }
+              onPress={
+                quitRun
+              }
+            >
+              <Text
+                style={
+                  styles.quitText
+                }
+              >
+                QUIT RUN
               </Text>
-
-              <Text style={styles.pbTitle}>
-                LONGEST TIME
-              </Text>
-            </View>
-          </View>
-
-          <Text style={styles.pbValue}>
-            {formatTime(personalBestTime)}
-          </Text>
-        </View>
-
-        <Text style={styles.footer}>
-          KEEP MOVING FORWARD
-        </Text>
-      </ScrollView>
-
-      {/* ========================= */}
-      {/* BOTTOM NAV */}
-      {/* ========================= */}
-
-      <View style={styles.bottomNav}>
-        <Pressable
-          style={styles.navItem}
-          onPress={() => router.push('/')}
-        >
-          <Text style={styles.navIcon}>
-            ⌂
-          </Text>
-
-          <Text style={styles.navText}>
-            HOME
-          </Text>
-        </Pressable>
-
-        <Pressable
-          style={styles.navItem}
-          onPress={() =>
-            router.push('/weeks')
-          }
-        >
-          <Text style={styles.navIcon}>
-            ▶
-          </Text>
-
-          <Text style={styles.navText}>
-            PROGRAMME
-          </Text>
-        </Pressable>
-
-        <Pressable
-          style={styles.navItem}
-          onPress={() =>
-            router.push('/progress')
-          }
-        >
-          <Text style={styles.navIcon}>
-            ✓
-          </Text>
-
-          <Text style={styles.navText}>
-            PROGRESS
-          </Text>
-        </Pressable>
-
-        <Pressable
-          style={styles.navItem}
-          onPress={() =>
-            router.push('/free-run')
-          }
-        >
-          <Text style={styles.navIcon}>
-            🏃
-          </Text>
-
-          <Text style={styles.navText}>
-            FREE RUN
-          </Text>
-        </Pressable>
-
-        <Pressable
-          style={styles.navItem}
-          onPress={() =>
-            router.push('/community')
-          }
-        >
-          <Text style={styles.navIcon}>
-            👥
-          </Text>
-
-          <Text style={styles.navText}>
-            COMMUNITY
-          </Text>
-        </Pressable>
-      </View>
+            </Pressable>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -997,686 +1682,592 @@ export default function FreeRunScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: BLACK,
+    backgroundColor: '#000000',
   },
 
-  container: {
+  screen: {
+    flex: 1,
+    backgroundColor: '#000000',
+  },
+
+  header: {
+    minHeight: 80,
+    flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 18,
-    paddingTop: 20,
-    paddingBottom: 105,
-    width: '100%',
-    maxWidth: 700,
-    alignSelf: 'center',
+    backgroundColor: '#111111',
+    borderBottomWidth: 2,
+    borderBottomColor: '#FF8C00',
   },
 
-  heading: {
-    color: WHITE,
-    fontSize: 34,
-    fontWeight: '900',
-    textAlign: 'center',
-    letterSpacing: 1,
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 3,
-      height: 3,
-    },
-    textShadowRadius: 3,
-  },
-
-  subheading: {
-    color: ORANGE,
-    fontSize: 22,
-    fontWeight: '900',
-    letterSpacing: 2,
-    marginTop: 5,
-    textAlign: 'center',
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  sectionHeading: {
-    width: '100%',
-    backgroundColor: ORANGE,
-    borderRadius: 10,
-    minHeight: 44,
+  backButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#000000',
+    borderWidth: 2,
+    borderColor: '#FF8C00',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 18,
-    marginBottom: 10,
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-    shadowOpacity: 0.45,
-    shadowRadius: 3,
-    elevation: 4,
   },
 
-  sectionHeadingText: {
-    color: WHITE,
-    fontSize: 17,
+  backText: {
+    color: '#FFFFFF',
+    fontSize: 24,
     fontWeight: '900',
-    letterSpacing: 1.2,
-    textAlign: 'center',
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
   },
 
-  gpsBox: {
-    width: '100%',
-    backgroundColor: CARD,
-    borderWidth: 2,
-    borderColor: 'rgba(255,140,0,0.75)',
-    borderRadius: 16,
+  headerCentre: {
+    flex: 1,
     alignItems: 'center',
-    paddingVertical: 14,
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-    shadowOpacity: 0.35,
-    shadowRadius: 4,
-    elevation: 3,
+    marginRight: 48,
   },
 
-  gpsTitle: {
-    color: WHITE,
-    fontSize: 13,
+  headerTitle: {
+    color: '#FFFFFF',
+    fontSize: 22,
     fontWeight: '900',
-    letterSpacing: 1.2,
+    letterSpacing: 1,
   },
 
-  gpsValue: {
-    color: ORANGE,
-    fontSize: 38,
-    fontWeight: '900',
-    marginTop: 2,
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  gpsStatus: {
-    color: GREY,
+  headerSubtitle: {
+    color: '#FF8C00',
     fontSize: 11,
     fontWeight: '900',
     letterSpacing: 1,
     marginTop: 3,
   },
 
-  gpsActive: {
-    color: GREEN,
-  },
-
-  gpsError: {
-    color: RED,
-  },
-
-  timerBox: {
+  scrollContent: {
     width: '100%',
-    backgroundColor: CARD,
-    borderWidth: 2,
-    borderColor: 'rgba(255,140,0,0.75)',
-    borderRadius: 16,
-    alignItems: 'center',
-    paddingVertical: 13,
-    marginTop: 10,
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-    shadowOpacity: 0.35,
-    shadowRadius: 4,
-    elevation: 3,
+    maxWidth: 650,
+    alignSelf: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 25,
+    paddingBottom: 50,
   },
 
-  timer: {
-    color: ORANGE,
-    fontSize: 48,
+  introCard: {
+    backgroundColor: '#111111',
+    borderWidth: 2,
+    borderColor: '#FF8C00',
+    borderRadius: 16,
+    padding: 20,
+    alignItems: 'center',
+  },
+
+  introTitle: {
+    color: '#FF8C00',
+    fontSize: 22,
     fontWeight: '900',
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
+    letterSpacing: 2,
+  },
+
+  introText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+    marginTop: 7,
+    textAlign: 'center',
+  },
+
+  timerCard: {
+    backgroundColor: '#111111',
+    borderWidth: 1,
+    borderColor: '#333333',
+    borderRadius: 14,
+    alignItems: 'center',
+    paddingVertical: 22,
+    marginTop: 12,
   },
 
   timerLabel: {
-    color: GREY,
-    fontSize: 10,
+    color: '#AAAAAA',
+    fontSize: 11,
     fontWeight: '900',
-    letterSpacing: 1.2,
-    marginTop: -2,
+    letterSpacing: 2,
   },
 
-  startButton: {
-    width: '100%',
-    backgroundColor: GREEN,
-    borderRadius: 14,
-    paddingVertical: 17,
-    marginTop: 10,
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 5,
-    },
-    shadowOpacity: 0.5,
-    shadowRadius: 5,
-    elevation: 7,
-  },
-
-  startButtonPressed: {
-    opacity: 0.78,
-    transform: [{ scale: 0.98 }],
-  },
-
-  startText: {
-    color: WHITE,
-    fontSize: 19,
+  timer: {
+    color: '#FFFFFF',
+    fontSize: 68,
     fontWeight: '900',
-    textAlign: 'center',
-    letterSpacing: 1,
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  endButton: {
-    width: '100%',
-    backgroundColor: RED,
-    borderRadius: 14,
-    paddingVertical: 17,
-    marginTop: 10,
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 5,
-    },
-    shadowOpacity: 0.5,
-    shadowRadius: 5,
-    elevation: 7,
-  },
-
-  endButtonPressed: {
-    opacity: 0.78,
-    transform: [{ scale: 0.98 }],
-  },
-
-  endText: {
-    color: WHITE,
-    fontSize: 19,
-    fontWeight: '900',
-    textAlign: 'center',
-    letterSpacing: 1,
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  saveBox: {
-    width: '100%',
-    backgroundColor: CARD,
-    borderWidth: 2,
-    borderColor: GREEN,
-    borderRadius: 16,
-    padding: 16,
-    marginTop: 10,
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-    shadowOpacity: 0.35,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-
-  saveTitle: {
-    color: WHITE,
-    fontSize: 21,
-    fontWeight: '900',
-    textAlign: 'center',
-    marginBottom: 12,
-    letterSpacing: 0.5,
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  completeStats: {
-    flexDirection: 'row',
-    width: '100%',
-    gap: 10,
-    marginBottom: 12,
-  },
-
-  completeStat: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    borderRadius: 10,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-
-  completeNumber: {
-    color: ORANGE,
-    fontSize: 25,
-    fontWeight: '900',
-  },
-
-  completeLabel: {
-    color: GREY,
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 1,
     marginTop: 2,
+    fontVariant: ['tabular-nums'],
   },
 
-  saveButton: {
-    backgroundColor: ORANGE,
-    borderRadius: 12,
-    paddingVertical: 16,
-    shadowColor: '#000000',
+  distanceCard: {
+    backgroundColor: '#111111',
+    borderWidth: 1,
+    borderColor: '#333333',
+    borderRadius: 14,
+    alignItems: 'center',
+    paddingVertical: 20,
+    marginTop: 12,
+  },
+
+  sectionTitle: {
+    color: '#FF8C00',
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 2,
+    textAlign: 'center',
+  },
+
+  distanceNumber: {
+    color: '#FFFFFF',
+    fontSize: 42,
+    fontWeight: '900',
+    marginTop: 4,
+  },
+
+  gpsStatus: {
+    color: '#FF8C00',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+    marginTop: 4,
+    textAlign: 'center',
+  },
+
+  stepsLiveCard: {
+    backgroundColor: '#111111',
+    borderWidth: 1,
+    borderColor: '#333333',
+    borderRadius: 14,
+    alignItems: 'center',
+    paddingVertical: 18,
+    marginTop: 12,
+  },
+
+  stepsWaiting: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '900',
+    marginTop: 6,
+  },
+
+  stepsLiveStatus: {
+    color: '#FF8C00',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 1,
+    marginTop: 5,
+    textAlign: 'center',
+  },
+
+  mainButton: {
+    width: '100%',
+    minHeight: 70,
+    backgroundColor: '#FF8C00',
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 25,
+    borderWidth: 2,
+    borderColor: '#FFB347',
+    elevation: 8,
+  },
+
+  pauseButton: {
+    backgroundColor: '#333333',
+    borderColor: '#FF8C00',
+  },
+
+  mainButtonText: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+
+  finishArea: {
+    marginTop: 16,
+  },
+
+  finishHint: {
+    color: '#FF8C00',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 2,
+    textAlign: 'center',
+    marginBottom: 7,
+  },
+
+  finishButton: {
+    width: '100%',
+    minHeight: 82,
+    backgroundColor: '#FF8C00',
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+    elevation: 12,
+    shadowColor: '#FF8C00',
+    shadowOpacity: 0.8,
+    shadowRadius: 12,
     shadowOffset: {
       width: 0,
       height: 4,
     },
-    shadowOpacity: 0.45,
-    shadowRadius: 4,
-    elevation: 5,
   },
 
-  saveButtonPressed: {
-    opacity: 0.78,
-    transform: [{ scale: 0.98 }],
+  finishIcon: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '900',
+    marginBottom: 1,
   },
 
-  saveText: {
-    color: WHITE,
-    fontSize: 18,
+  finishButtonText: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '900',
+    letterSpacing: 1.5,
+  },
+
+  finishSubText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 1,
+    marginTop: 3,
+  },
+
+  completedCard: {
+    backgroundColor: '#111111',
+    borderWidth: 2,
+    borderColor: '#FF8C00',
+    borderRadius: 16,
+    alignItems: 'center',
+    paddingVertical: 24,
+    paddingHorizontal: 15,
+    marginTop: 15,
+  },
+
+  completedTitle: {
+    color: '#FF8C00',
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: 2,
+  },
+
+  completedDistance: {
+    color: '#FFFFFF',
+    fontSize: 48,
+    fontWeight: '900',
+    marginTop: 5,
+  },
+
+  completedTime: {
+    color: '#AAAAAA',
+    fontSize: 14,
+    fontWeight: '800',
+    marginTop: 3,
+  },
+
+  completedMessage: {
+    color: '#FF8C00',
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 1,
+    marginTop: 12,
+    textAlign: 'center',
+  },
+
+  inputCard: {
+    backgroundColor: '#111111',
+    borderWidth: 1,
+    borderColor: '#333333',
+    borderRadius: 14,
+    padding: 18,
+    marginTop: 15,
+  },
+
+  inputHelp: {
+    color: '#AAAAAA',
+    fontSize: 11,
+    lineHeight: 17,
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 10,
+  },
+
+  inputLabel: {
+    color: '#FF8C00',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+    marginTop: 12,
+    marginBottom: 6,
+  },
+
+  input: {
+    minHeight: 52,
+    backgroundColor: '#000000',
+    borderWidth: 1,
+    borderColor: '#444444',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+
+  stepsInput: {
+    minHeight: 58,
+    backgroundColor: '#000000',
+    borderWidth: 2,
+    borderColor: '#FF8C00',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    color: '#FFFFFF',
+    fontSize: 24,
     fontWeight: '900',
     textAlign: 'center',
-    letterSpacing: 0.8,
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
   },
 
-  lastRunBox: {
+  summaryBox: {
+    marginTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#333333',
+    paddingTop: 12,
+    alignItems: 'center',
+  },
+
+  summaryLabel: {
+    color: '#666666',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 1,
+    marginTop: 8,
+  },
+
+  summaryValue: {
+    color: '#FFFFFF',
+    fontSize: 19,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+
+  errorText: {
+    color: '#FF5555',
+    fontSize: 12,
+    fontWeight: '800',
+    textAlign: 'center',
+    lineHeight: 18,
+    marginTop: 15,
+  },
+
+  saveButton: {
     width: '100%',
-    minHeight: 68,
-    backgroundColor: CARD,
+    minHeight: 64,
+    backgroundColor: '#FF8C00',
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 22,
     borderWidth: 2,
-    borderColor: 'rgba(255,140,0,0.75)',
+    borderColor: '#FFB347',
+  },
+
+  saveButtonDisabled: {
+    opacity: 0.5,
+  },
+
+  saveButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+
+  leaderboardButton: {
+    width: '100%',
+    minHeight: 62,
+    backgroundColor: '#111111',
     borderRadius: 14,
-    paddingHorizontal: 13,
-    marginBottom: 9,
-    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-    shadowOpacity: 0.35,
-    shadowRadius: 3,
-    elevation: 3,
+    justifyContent: 'center',
+    flexDirection: 'row',
+    marginTop: 18,
+    borderWidth: 2,
+    borderColor: '#FF8C00',
   },
 
-  lastRunLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-
-  runBadge: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: ORANGE,
+  leaderboardIconCircle: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: '#000000',
+    borderWidth: 1,
+    borderColor: '#FF8C00',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 10,
   },
 
-  runBadgeText: {
-    color: WHITE,
-    fontSize: 17,
-    fontWeight: '900',
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 1,
-      height: 1,
-    },
-    textShadowRadius: 1,
+  leaderboardIcon: {
+    fontSize: 24,
   },
 
-  lastRunNumber: {
-    color: GREY,
+  leaderboardText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 1,
+    textAlign: 'center',
+  },
+
+  statsCard: {
+    backgroundColor: '#111111',
+    borderWidth: 1,
+    borderColor: '#333333',
+    borderRadius: 14,
+    padding: 18,
+    marginTop: 15,
+  },
+
+  statsRow: {
+    flexDirection: 'row',
+    marginTop: 15,
+  },
+
+  statBox: {
+    flex: 1,
+    alignItems: 'center',
+  },
+
+  statValue: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '900',
+  },
+
+  statLabel: {
+    color: '#777777',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 1,
+    marginTop: 4,
+  },
+
+  bestRow: {
+    borderTopWidth: 1,
+    borderTopColor: '#333333',
+    marginTop: 15,
+    paddingTop: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+
+  bestLabel: {
+    color: '#777777',
     fontSize: 10,
     fontWeight: '900',
     letterSpacing: 1,
   },
 
-  lastRunTime: {
-    color: WHITE,
-    fontSize: 17,
-    fontWeight: '900',
-    marginTop: 1,
-  },
-
-  lastRunDistance: {
-    color: ORANGE,
-    fontSize: 20,
-    fontWeight: '900',
-    textAlign: 'right',
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  emptyBox: {
-    width: '100%',
-    minHeight: 62,
-    backgroundColor: CARD,
-    borderWidth: 2,
-    borderColor: 'rgba(255,140,0,0.75)',
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  emptyText: {
-    color: '#777777',
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 1,
-    textAlign: 'center',
-  },
-
-  resetButton: {
-    width: '100%',
-    backgroundColor: RED,
-    borderRadius: 10,
-    minHeight: 42,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 10,
-    shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-    shadowOpacity: 0.45,
-    shadowRadius: 3,
-    elevation: 4,
-  },
-
-  resetButtonPressed: {
-    opacity: 0.75,
-    transform: [{ scale: 0.98 }],
-  },
-
-  resetText: {
-    color: WHITE,
-    fontSize: 14,
-    fontWeight: '900',
-    letterSpacing: 1,
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  resetConfirmBox: {
-    width: '100%',
-    backgroundColor: CARD,
-    borderWidth: 2,
-    borderColor: RED,
-    borderRadius: 14,
-    padding: 15,
-    marginBottom: 10,
-  },
-
-  resetConfirmTitle: {
-    color: WHITE,
+  bestValue: {
+    color: '#FF8C00',
     fontSize: 18,
     fontWeight: '900',
-    textAlign: 'center',
   },
 
-  resetConfirmDescription: {
-    color: GREY,
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: '700',
-    textAlign: 'center',
-    marginTop: 8,
-    marginBottom: 13,
-  },
-
-  resetConfirmButtons: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-
-  cancelResetButton: {
-    flex: 1,
-    backgroundColor: '#333333',
-    borderRadius: 10,
-    minHeight: 43,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  cancelResetText: {
-    color: WHITE,
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 0.8,
-  },
-
-  confirmResetButton: {
-    flex: 1,
-    backgroundColor: RED,
-    borderRadius: 10,
-    minHeight: 43,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  confirmResetText: {
-    color: WHITE,
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 0.8,
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 1,
-      height: 1,
-    },
-    textShadowRadius: 1,
-  },
-
-  stats: {
-    flexDirection: 'row',
-    width: '100%',
-    gap: 9,
-  },
-
-  stat: {
-    flex: 1,
-    backgroundColor: CARD,
-    borderWidth: 2,
-    borderColor: 'rgba(255,140,0,0.75)',
+  historyCard: {
+    backgroundColor: '#111111',
+    borderWidth: 1,
+    borderColor: '#333333',
     borderRadius: 14,
-    paddingVertical: 13,
-    paddingHorizontal: 3,
-    alignItems: 'center',
-    justifyContent: 'center',
+    padding: 18,
+    marginTop: 15,
   },
 
-  number: {
-    color: ORANGE,
-    fontSize: 21,
-    fontWeight: '900',
-    textAlign: 'center',
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  label: {
-    color: WHITE,
-    fontSize: 9,
-    fontWeight: '900',
-    letterSpacing: 0.5,
-    marginTop: 3,
-    textAlign: 'center',
-  },
-
-  pbBox: {
-    width: '100%',
-    minHeight: 74,
-    backgroundColor: CARD,
-    borderWidth: 2,
-    borderColor: 'rgba(255,140,0,0.75)',
-    borderRadius: 14,
-    paddingHorizontal: 13,
-    marginTop: 9,
+  historyItem: {
+    minHeight: 62,
+    borderBottomWidth: 1,
+    borderBottomColor: '#222222',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
 
-  pbLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  historyInfo: {
     flex: 1,
   },
 
-  trophy: {
-    fontSize: 24,
-    marginRight: 9,
-  },
-
-  pbSmall: {
-    color: GREY,
-    fontSize: 9,
+  historyDistance: {
+    color: '#FFFFFF',
+    fontSize: 18,
     fontWeight: '900',
-    letterSpacing: 1,
-    marginBottom: 2,
   },
 
-  pbTitle: {
-    color: WHITE,
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 0.3,
-  },
-
-  pbValue: {
-    color: ORANGE,
-    fontSize: 21,
-    fontWeight: '900',
-    textAlign: 'right',
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
-  },
-
-  footer: {
+  historyDate: {
     color: '#777777',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1.5,
-    textAlign: 'center',
-    marginTop: 14,
+    fontSize: 10,
+    fontWeight: '700',
+    marginTop: 3,
   },
 
-  bottomNav: {
-    width: '100%',
-    maxWidth: 700,
-    minHeight: 75,
-    alignSelf: 'center',
-    backgroundColor: BLACK,
-    borderTopWidth: 2,
-    borderTopColor: ORANGE,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-around',
-    paddingHorizontal: 5,
-  },
-
-  navItem: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
+  historyDelete: {
+    paddingHorizontal: 10,
     paddingVertical: 8,
   },
 
-  navIcon: {
-    color: WHITE,
-    fontSize: 22,
-    marginBottom: 3,
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 2,
-      height: 2,
-    },
-    textShadowRadius: 2,
+  historyDeleteText: {
+    color: '#FF6666',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 1,
   },
 
-  navText: {
-    color: WHITE,
-    fontSize: 8,
-    fontWeight: '800',
+  deleteButton: {
+    width: '100%',
+    minHeight: 58,
+    backgroundColor: '#111111',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 14,
+    borderWidth: 1,
+    borderColor: '#663333',
+    paddingVertical: 10,
+  },
+
+  deleteButtonText: {
+    color: '#FF6666',
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 1,
     textAlign: 'center',
-    textShadowColor: '#000000',
-    textShadowOffset: {
-      width: 1,
-      height: 1,
-    },
-    textShadowRadius: 1,
+  },
+
+  deleteButtonSubText: {
+    color: '#777777',
+    fontSize: 9,
+    fontWeight: '700',
+    marginTop: 3,
+    textAlign: 'center',
+  },
+
+  quitButton: {
+    width: '100%',
+    minHeight: 52,
+    backgroundColor: '#111111',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#444444',
+  },
+
+  quitText: {
+    color: '#AAAAAA',
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 1,
   },
 });

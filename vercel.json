@@ -1,4 +1,44 @@
 {
+  "buildCommand": "npx expo export --platform web",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/leaderboard",
+      "destination": "/leaderboard.html"
+    },
+    {
+      "source": "/run",
+      "destination": "/run.html"
+    },
+    {
+      "source": "/free-run",
+      "destination": "/free-run.html"
+    },
+    {
+      "source": "/weeks",
+      "destination": "/weeks.html"
+    },
+    {
+      "source": "/progress",
+      "destination": "/progress.html"
+    },
+    {
+      "source": "/community",
+      "destination": "/community.html"
+    },
+    {
+      "source": "/explore",
+      "destination": "/explore.html"
+    },
+    {
+      "source": "/workout",
+      "destination": "/workout.html"
+    }
+  ],
   "headers": [
     {
       "source": "/(.*)",

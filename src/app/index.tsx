@@ -140,7 +140,7 @@ export default function HomeScreen() {
               />
 
               <Text style={styles.startText}>
-                START YOUR PROGRAM
+                START THE PROGRAM
               </Text>
             </Pressable>
           </Animated.View>
@@ -379,13 +379,13 @@ const styles = StyleSheet.create({
   },
 
   backgroundImage: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     width: '100%',
     height: '100%',
   },
 
   darkOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.58)',
   },
 
