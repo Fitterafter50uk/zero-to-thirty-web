@@ -64,27 +64,40 @@ jobs:
         working-directory: ios
         run: pod install
 
-      - name: Show generated iOS project
+      - name: Find iOS workspace and scheme
         run: |
-          echo "Generated workspaces:"
-          find ios -maxdepth 2 -name "*.xcworkspace"
-
-          echo "Generated projects:"
-          find ios -maxdepth 2 -name "*.xcodeproj"
-
-      - name: Build iOS
-        run: |
-          WORKSPACE=$(find ios -maxdepth 2 -name "*.xcworkspace" | head -1)
+          WORKSPACE=$(find ios -maxdepth 3 -name "*.xcworkspace" | head -1)
 
           if [ -z "$WORKSPACE" ]; then
             echo "No Xcode workspace found"
             exit 1
           fi
 
-          echo "Using workspace: $WORKSPACE"
+          echo "Workspace: $WORKSPACE"
+
+          xcodebuild -workspace "$WORKSPACE" -list
+
+          SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list -json | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(d['workspace']['schemes'][0])")
+
+          if [ -z "$SCHEME" ]; then
+            echo "No Xcode scheme found"
+            exit 1
+          fi
+
+          echo "Scheme: $SCHEME"
+
+          echo "WORKSPACE=$WORKSPACE" >> "$GITHUB_ENV"
+          echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
+
+      - name: Build iOS
+        run: |
+          echo "Building workspace: $WORKSPACE"
+          echo "Building scheme: $SCHEME"
 
           xcodebuild \
             -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
             -archivePath "$RUNNER_TEMP/ZeroToThirty.xcarchive" \
