@@ -76,7 +76,7 @@ const { data, error } = await supabase
 .from('zero_to_thirty_community_posts')
 .select('*')
 .order('created_at', { ascending: false })
-.limit(30);
+.limit(10);
 
 if (error) {
   console.log('Could not load Zero to Thirty community messages', error);
